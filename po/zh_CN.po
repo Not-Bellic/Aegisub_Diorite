@@ -279,6 +279,10 @@ msgstr "东欧语系"
 msgid "OEM"
 msgstr "OEM编码"
 
+#: ../src/ass_style.cpp:195
+msgid "Auto-detect base direction (libass only)"
+msgstr "自动检测基准方向（仅 libass）"
+
 #: ../src/audio_box.cpp:73
 msgid "Horizontal zoom"
 msgstr "水平缩放"
@@ -324,6 +328,39 @@ msgstr "卡拉OK标签改为\\ko"
 msgid "karaoke split"
 msgstr "卡拉OK标签"
 
+#: ../src/audio_karaoke.cpp:87
+msgid "Karaoke tag type used when committing Toshiki K-Timing"
+msgstr "提交 Toshiki K-Timing 时使用的卡拉OK标签类型"
+
+#: ../src/audio_karaoke.cpp:90
+msgid "Auto Cut"
+msgstr "自动切割"
+
+#: ../src/audio_karaoke.cpp:91
+msgid "Enable automatic Toshiki K-Timing slot cutting"
+msgstr "启用 Toshiki K-Timing 槽位自动切割"
+
+#: ../src/audio_karaoke.cpp:370
+msgid "Toshiki K-Timing tag"
+msgstr "Toshiki K-Timing 标签"
+
+#: ../src/audio_karaoke.cpp:372
+#, c-format
+msgid "Use %s and commit"
+msgstr "使用 %s 并提交"
+
+#: ../src/audio_karaoke.cpp:615
+msgid "Toshiki K-Timing auto cut is disabled in preferences"
+msgstr "Toshiki K-Timing 自动切割已在首选项中禁用"
+
+#: ../src/audio_karaoke.cpp:617
+msgid "Automatic Toshiki K-Timing slot cutting is enabled"
+msgstr "已启用 Toshiki K-Timing 槽位自动切割"
+
+#: ../src/audio_karaoke.cpp:756
+msgid "auto split Japanese kana"
+msgstr "自动拆分日文假名"
+
 #: ../src/audio_provider_bestsource.cpp:59 ../src/ffmpegsource_common.cpp:77
 #: ../src/video_provider_bestsource.cpp:118
 msgid "Indexing"
@@ -333,6 +370,10 @@ msgstr "索引"
 #: ../src/video_provider_bestsource.cpp:119
 msgid "Creating cache... This can take a while!"
 msgstr "正在创建缓存…这可能需要一些时间！"
+
+#: ../src/audio_provider_bestsource.cpp:68
+msgid "Indexing file... This will take a while!"
+msgstr "正在为文件建立索引，可能需要一些时间！"
 
 #: ../src/audio_renderer_waveform.cpp:152
 msgid "Maximum"
@@ -346,6 +387,10 @@ msgstr "最大 + 平均"
 #: ../src/command/time.cpp:177
 msgid "timing"
 msgstr "计时"
+
+#: ../src/audio_timing_dialogue.cpp:686
+msgid "dialog time changer"
+msgstr "对话框时间调整器"
 
 #: ../src/audio_timing_karaoke.cpp:241
 msgid "karaoke timing"
@@ -380,6 +425,31 @@ msgstr "所有支持格式"
 #: ../src/auto4_base.cpp:499
 msgid "File was not recognized as a script"
 msgstr "文件未被识别为脚本"
+
+#: ../src/auto4_base.cpp:298
+#, c-format
+msgid "Failed to reload Automation script '%s':\n%s"
+msgstr "重新载入自动化脚本“%s”失败：\n%s"
+
+#: ../src/auto4_base.cpp:304
+#, c-format
+msgid "Failed to reload Automation script '%s':\nUnknown error"
+msgstr "重新载入自动化脚本“%s”失败：\n未知错误"
+
+#: ../src/auto4_base.cpp:352
+#, c-format
+msgid "Failed to scan Automation autoload path '%s':\n%s"
+msgstr "扫描自动化自动加载目录“%s”失败：\n%s"
+
+#: ../src/auto4_base.cpp:360
+#, c-format
+msgid "Failed to scan Automation autoload path '%s':\nUnknown error"
+msgstr "扫描自动化自动加载目录“%s”失败：\n未知错误"
+
+#: ../src/auto4_base.cpp:385
+#, c-format
+msgid "Failed to load Automation script '%s':\nUnknown error"
+msgstr "载入自动化脚本“%s”失败：\n未知错误"
 
 #: ../src/charset_detect.cpp:55
 msgid ""
@@ -831,6 +901,18 @@ msgstr "同时调节垂直缩放与音量"
 #: ../src/command/audio.cpp:534
 msgid "Toggle karaoke mode"
 msgstr "切换卡拉OK模式"
+
+#: ../src/command/audio.cpp:548
+msgid "Toshiki K-Timing Mode"
+msgstr "Toshiki K-Timing 模式"
+
+#: ../src/command/audio.cpp:550
+msgid "Spectrogram-based karaoke timing with slot previews"
+msgstr "基于频谱图的卡拉OK打轴，带槽位预览"
+
+#: ../src/command/audio.cpp:567
+msgid "Toshiki K-Timing Auto Cut"
+msgstr "Toshiki K-Timing 自动切割"
 
 #: ../src/command/automation.cpp:48
 msgid "&Reload Automation scripts"
@@ -1335,6 +1417,90 @@ msgstr "在光标处插入原文"
 #: ../src/command/edit.cpp:1264
 msgid "insert original"
 msgstr "插入原文"
+
+#: ../src/command/edit.cpp:2104
+msgid "set gradient color"
+msgstr "设置渐变颜色"
+
+#: ../src/command/edit.cpp:2335
+msgid "Insert Color Value..."
+msgstr "插入颜色值…"
+
+#: ../src/command/edit.cpp:2336
+msgid "Color Value"
+msgstr "颜色值"
+
+#: ../src/command/edit.cpp:2337
+msgid "Insert an ASS color value at the cursor position"
+msgstr "在光标处插入 ASS 颜色值"
+
+#: ../src/command/edit.cpp:2452
+msgid "Mangetsu Gradient Color/Alpha..."
+msgstr "Mangetsu 渐变颜色/透明度…"
+
+#: ../src/command/edit.cpp:2453
+msgid "Gradient"
+msgstr "渐变"
+
+#: ../src/command/edit.cpp:2454
+msgid "Mangetsu Gradient Color/Alpha"
+msgstr "Mangetsu 渐变颜色/透明度"
+
+#: ../src/command/edit.cpp:2742
+msgid "Comment/Uncomment Lines"
+msgstr "注释/取消注释行"
+
+#: ../src/command/edit.cpp:2744
+msgid "Toggle comment state for selected lines"
+msgstr "切换所选行的注释状态"
+
+#: ../src/command/edit.cpp:2769
+msgid "toggle comment"
+msgstr "切换注释"
+
+#: ../src/command/edit.cpp:2776
+msgid "Invert Comment Flags"
+msgstr "反转注释标记"
+
+#: ../src/command/edit.cpp:2778
+msgid "Invert comment state for each selected line"
+msgstr "反转每个所选行的注释状态"
+
+#: ../src/command/edit.cpp:2798
+msgid "invert comments"
+msgstr "反转注释"
+
+#: ../src/command/edit.cpp:3006
+msgid "Join Next (normal)"
+msgstr "合并下一行（普通）"
+
+#: ../src/command/edit.cpp:3007
+msgid "join next"
+msgstr "合并下一行"
+
+#: ../src/command/edit.cpp:3008
+msgid "Join the current line with the next line, merging text and timing and removing the next line"
+msgstr "将当前行与下一行合并，同时合并文本与时间并删除下一行"
+
+#: ../src/command/edit.cpp:3052
+msgid "Join Next"
+msgstr "合并下一行"
+
+#: ../src/command/edit.cpp:3054
+msgid "Join the current line with the next line, merging timing and storing merged text in the original panel"
+msgstr "将当前行与下一行合并时间，并把合并后的文本存入原文栏"
+
+#: ../src/command/edit.cpp:3131
+msgid "Join Previous (normal)"
+msgstr "合并上一行（普通）"
+
+#: ../src/command/edit.cpp:3132
+msgid "join last"
+msgstr "合并上一行"
+
+#: ../src/command/edit.cpp:3133
+msgid "Join the current line with the previous line, merging text and timing and removing the previous line"
+msgstr "将当前行与上一行合并，同时合并文本与时间并删除上一行"
 
 #: ../src/command/grid.cpp:52 ../src/command/grid.cpp:53
 #: ../src/command/grid.cpp:64 ../src/command/grid.cpp:65
@@ -2024,6 +2190,35 @@ msgstr "拼写检查器"
 #: ../src/command/subtitle.cpp:444
 msgid "Open spell checker"
 msgstr "打开拼写检查器"
+
+#: ../src/command/subtitle.cpp:190
+msgid "set alignment"
+msgstr "设置对齐方式"
+
+#: ../src/command/subtitle.cpp:211
+#, c-format
+msgid "Set Alignment \\an%d"
+msgstr "设置对齐方式 \\an%d"
+
+#: ../src/command/subtitle.cpp:213
+msgid "Set ASS alignment for selected lines"
+msgstr "为所选行设置 ASS 对齐方式"
+
+#: ../src/command/subtitle.cpp:514
+msgid "The subtitle file seems to be in use by another program.\n\nPlease close that program before saving."
+msgstr "字幕文件似乎正被其他程序占用。\n\n请先关闭该程序再保存。"
+
+#: ../src/command/subtitle.cpp:517
+msgid "The file is still in use.\n\nPlease close any app that is using this subtitle before saving. Please."
+msgstr "文件仍被占用。\n\n请先关闭正在使用该字幕的程序再保存。"
+
+#: ../src/command/subtitle.cpp:527
+msgid "Error while saving"
+msgstr "保存时出错"
+
+#: ../src/command/subtitle.cpp:538
+msgid "Advanced Substation Alpha (*.ass)|*.ass|All files (*.*)|*.*"
+msgstr "Advanced Substation Alpha (*.ass)|*.ass|所有文件 (*.*)|*.*"
 
 #: ../src/command/time.cpp:101
 msgid "adjoin"
@@ -2867,6 +3062,46 @@ msgstr "缩小"
 #: ../src/command/video.cpp:796
 msgid "Zoom video out"
 msgstr "缩小视频"
+
+#: ../src/command/video.cpp:614
+msgid "Image2Text"
+msgstr "图片转文字"
+
+#: ../src/command/video.cpp:628
+msgid "Mask mode"
+msgstr "遮罩模式"
+
+#: ../src/command/video.cpp:630
+msgid "Detect text regions from the current video frame for masking"
+msgstr "从当前视频帧中检测文字区域以生成遮罩"
+
+#: ../src/command/video.cpp:775
+msgid "Increase playback speed"
+msgstr "提高播放速度"
+
+#: ../src/command/video.cpp:777
+msgid "Increase video playback speed"
+msgstr "提高视频播放速度"
+
+#: ../src/command/video.cpp:786
+msgid "Decrease playback speed"
+msgstr "降低播放速度"
+
+#: ../src/command/video.cpp:788
+msgid "Decrease video playback speed"
+msgstr "降低视频播放速度"
+
+#: ../src/command/video.cpp:797
+msgid "Reset playback speed"
+msgstr "重置播放速度"
+
+#: ../src/command/video.cpp:799
+msgid "Reset video playback speed to 1.00x"
+msgstr "将视频播放速度重置为 1.00x"
+
+#: ../src/command/video.cpp:825
+msgid "Set video playback speed"
+msgstr "设置视频播放速度"
 
 #: ../src/command/vis_tool.cpp:102 ../src/command/vis_tool.cpp:103
 msgid "Standard"
@@ -3742,6 +3977,11 @@ msgid ""
 "folder is entered, a default name will be used."
 msgstr "输入目标压缩文件名。若输入为文件夹，则会使用一个默认名称。"
 
+#: ../src/dialog_fonts_collector.cpp:102
+#, c-format
+msgid "* An error occurred when enumerating the used fonts: %s.\n"
+msgstr "* 枚举已使用的字体时发生错误：%s。\n"
+
 #: ../src/dialog_jumpto.cpp:73
 msgid "Frame: "
 msgstr "帧："
@@ -3988,6 +4228,18 @@ msgstr ""
 #: ../src/dialog_properties.cpp:196
 msgid "property changes"
 msgstr "配置更改"
+
+#: ../src/dialog_properties.cpp:139
+msgid "Script: "
+msgstr "脚本："
+
+#: ../src/dialog_properties.cpp:145
+msgid "From video"
+msgstr "来自视频"
+
+#: ../src/dialog_properties.cpp:151
+msgid "Layout: "
+msgstr "布局分辨率："
 
 #: ../src/dialog_resample.cpp:119
 msgid "&Symmetrical"
@@ -4607,6 +4859,14 @@ msgstr "更新脚本？"
 msgid "style change"
 msgstr "样式更改"
 
+#: ../src/dialog_style_editor.cpp:244
+msgid "Choose how the border is drawn: normal outline, outline as box, or shadow as box (libass only)."
+msgstr "选择边框的绘制方式：普通轮廓、轮廓作为盒子，或阴影作为盒子（仅 libass）。"
+
+#: ../src/dialog_style_editor.cpp:327
+msgid "box"
+msgstr "盒子"
+
 #: ../src/dialog_style_manager.cpp:189
 msgid "Move style up"
 msgstr "上移样式"
@@ -4801,6 +5061,31 @@ msgstr "排序样式"
 #: ../src/dialog_style_manager.cpp:881
 msgid "style move"
 msgstr "样式移动"
+
+#: ../src/dialog_style_manager.cpp:705
+msgid "Selected subtitle has different resolution than the current subtitle. Do you want to continue?"
+msgstr "所选字幕与当前字幕的分辨率不同。是否继续？"
+
+#: ../src/dialog_style_manager.cpp:708
+msgid "Continue"
+msgstr "继续"
+
+#: ../src/dialog_style_manager.cpp:738
+#, c-format
+msgid "%d selected styles already exist in the current script. Do you want to check replacements manually?"
+msgstr "所选的 %d 个样式已存在于当前脚本中。是否手动检查替换？"
+
+#: ../src/dialog_style_manager.cpp:739
+msgid "Style name conflicts"
+msgstr "样式名冲突"
+
+#: ../src/dialog_style_manager.cpp:741
+msgid "Check manually"
+msgstr "手动检查"
+
+#: ../src/dialog_style_manager.cpp:741
+msgid "Replace All"
+msgstr "全部替换"
 
 #: ../src/dialog_styling_assistant.cpp:65
 #: ../src/dialog_styling_assistant.cpp:66
@@ -5395,6 +5680,11 @@ msgid "One font was found, but was missing glyphs used in the script.\n"
 msgid_plural ""
 "%d fonts were found, but were missing glyphs used in the script.\n"
 msgstr[0] "%d 已找到，但是缺少脚本中使用的字形。\n"
+
+#: ../src/font_file_lister.cpp:154
+#, c-format
+msgid "Font '%s' is used in a drawing, but not in any text.\n"
+msgstr "字体“%s”被用于绘图，但未用于任何文本。\n"
 
 #: ../src/font_file_lister_fontconfig.cpp:56
 #: ../src/font_file_lister_gdi.cpp:162
@@ -6165,7 +6455,7 @@ msgstr "专家设置"
 
 #: ../src/preferences.cpp:382
 msgid "Audio provider"
-msgstr "音频来自"
+msgstr "音频来源"
 
 #: ../src/preferences.cpp:385
 msgid "Audio player"
@@ -6297,11 +6587,11 @@ msgstr "缓冲长度"
 
 #: ../src/preferences.cpp:458
 msgid "Video provider"
-msgstr "视频来自"
+msgstr "视频来源"
 
 #: ../src/preferences.cpp:461
 msgid "Subtitles provider"
-msgstr "字幕来自"
+msgstr "字幕渲染器"
 
 #: ../src/preferences.cpp:466
 msgid "Avisynth memory limit"
@@ -6386,6 +6676,199 @@ msgstr "偏好"
 #: ../src/preferences.cpp:793
 msgid "&Restore Defaults"
 msgstr "恢复默认(&R)"
+
+#: ../src/preferences.cpp:88
+msgid "Fast naming"
+msgstr "快速命名"
+
+#: ../src/preferences.cpp:92
+msgid "Off"
+msgstr "关闭"
+
+#: ../src/preferences.cpp:94
+msgid "Nanashi"
+msgstr "无名"
+
+#: ../src/preferences.cpp:96
+msgid "Fast naming mode"
+msgstr "快速命名模式"
+
+#: ../src/preferences.cpp:127
+msgid "Fast naming auto playback"
+msgstr "快速命名自动播放"
+
+#: ../src/preferences.cpp:212
+msgid "Keep pitch when changing speed"
+msgstr "变速时保持音调"
+
+#: ../src/preferences.cpp:214
+msgid "Auto-preview after Dialog Time Changer"
+msgstr "对话框时间调整器后自动预览"
+
+#: ../src/preferences.cpp:215
+msgid "Auto-preview after Join Next"
+msgstr "合并下一行后自动预览"
+
+#: ../src/preferences.cpp:240
+msgid "Preserve existing timings when cutting/splitting"
+msgstr "切割/分割时保留原有时间"
+
+#: ../src/preferences.cpp:241
+msgid "Kana only"
+msgstr "仅假名"
+
+#: ../src/preferences.cpp:243
+msgid "Toshiki K-Timing auto cut"
+msgstr "Toshiki K-Timing 自动切割"
+
+#: ../src/preferences.cpp:267
+msgid "Relative time readouts"
+msgstr "相对时间读数"
+
+#: ../src/preferences.cpp:268
+msgid "Disable the popup message for copy/inserting the relative time"
+msgstr "复制/插入相对时间时不弹出提示"
+
+#: ../src/preferences.cpp:270
+msgid "Copy to clipboard"
+msgstr "复制到剪贴板"
+
+#: ../src/preferences.cpp:271
+msgid "Insert into edit box"
+msgstr "插入到编辑框"
+
+#: ../src/preferences.cpp:272
+msgid "Copy and insert"
+msgstr "复制并插入"
+
+#: ../src/preferences.cpp:273
+msgid "Nothing happens"
+msgstr "不做任何操作"
+
+#: ../src/preferences.cpp:274
+msgid "When you click relative time section"
+msgstr "点击相对时间区域时"
+
+#: ../src/preferences.cpp:276
+msgid "Default zoom"
+msgstr "默认缩放"
+
+#: ../src/preferences.cpp:279
+msgid "Default zoom (%)"
+msgstr "默认缩放 (%)"
+
+#: ../src/preferences.cpp:280
+msgid "Force default video zoom"
+msgstr "强制使用默认视频缩放"
+
+#: ../src/preferences.cpp:281
+msgid "Ignore saved project video zoom and always start using the default video zoom level."
+msgstr "忽略项目中保存的视频缩放，始终以默认缩放级别开始。"
+
+#: ../src/preferences.cpp:311
+msgid "Shift+Enter adds \\n"
+msgstr "Shift+Enter 插入 \\n"
+
+#: ../src/preferences.cpp:332
+msgid "Visual Tools"
+msgstr "可视化工具"
+
+#: ../src/preferences.cpp:333
+msgid "Shape handle size"
+msgstr "形状控制点大小"
+
+#: ../src/preferences.cpp:339
+msgid "Dark Mode"
+msgstr "深色模式"
+
+#: ../src/preferences.cpp:340
+msgid "Enable experimental dark mode (restart required)"
+msgstr "启用实验性深色模式（需重启）"
+
+#: ../src/preferences.cpp:392
+msgid "Theme"
+msgstr "主题"
+
+#: ../src/preferences.cpp:398
+msgid "Import..."
+msgstr "导入…"
+
+#: ../src/preferences.cpp:636
+msgid "Unavailable subtitles providers"
+msgstr "不可用的字幕来源"
+
+#: ../src/preferences.cpp:654
+msgid "Hardware decoding (AV1/VP9)"
+msgstr "硬件解码 (AV1/VP9)"
+
+#: ../src/preferences.cpp:663
+msgid "Apply RFF"
+msgstr "应用 RFF"
+
+#: ../src/preferences.cpp:676
+msgid "Log level"
+msgstr "日志级别"
+
+#: ../src/preferences.cpp:678
+msgid "Load user plugins"
+msgstr "载入用户插件"
+
+#: ../src/preferences.cpp:683
+msgid "Set to Default"
+msgstr "设为默认"
+
+#: ../src/preferences.cpp:1001
+msgid "-- No preset (keep current) --"
+msgstr "-- 无预设（保持当前）--"
+
+#: ../src/preferences.cpp:1010
+msgid "No themes found (install/portable data missing)"
+msgstr "未找到主题（缺少安装/便携数据）"
+
+#: ../src/preferences.cpp:1055
+msgid "Enter a name for this theme:"
+msgstr "请输入主题名称："
+
+#: ../src/preferences.cpp:1055
+msgid "Export Theme"
+msgstr "导出主题"
+
+#: ../src/preferences.cpp:1064
+msgid "JSON files (*.json)|*.json|All files (*.*)|*.*"
+msgstr "JSON 文件 (*.json)|*.json|所有文件 (*.*)|*.*"
+
+#: ../src/preferences.cpp:1146
+msgid "Failed to export theme:\n"
+msgstr "导出主题失败：\n"
+
+#: ../src/preferences.cpp:1149
+msgid "Failed to export theme."
+msgstr "导出主题失败。"
+
+#: ../src/preferences.cpp:1154
+msgid "Import Theme"
+msgstr "导入主题"
+
+#: ../src/preferences.cpp:1186
+#, c-format
+msgid "A theme with Id '%s' already exists. Overwrite?"
+msgstr "已存在 ID 为“%s”的主题。是否覆盖？"
+
+#: ../src/preferences.cpp:1196
+msgid "The selected file is not a valid Aegisub colour theme.\n\nDetails: "
+msgstr "所选文件不是有效的 Aegisub 配色主题。\n\n详细信息："
+
+#: ../src/preferences.cpp:1204
+msgid "The selected file is not a valid Aegisub colour theme."
+msgstr "所选文件不是有效的 Aegisub 配色主题。"
+
+#: ../src/preferences.cpp:1229
+msgid "Failed to apply theme preset."
+msgstr "应用主题预设失败。"
+
+#: ../src/preferences.cpp:1232
+msgid "Theme preset"
+msgstr "主题预设"
 
 #: ../src/preferences_base.cpp:63
 msgid "Please choose the folder:"
@@ -6472,6 +6955,14 @@ msgstr ""
 "没有可用的音频来源有可用于处理所选文件的解码器。\n"
 "\n"
 "已尝试下列来源：\n"
+
+#: ../src/project.cpp:281
+msgid "None of the available audio providers recognised the selected file as containing audio data:\n\n"
+msgstr "没有可用的音频来源能够将所选文件识别为包含音频的文件：\n\n"
+
+#: ../src/project.cpp:284
+msgid "None of the available audio providers have a codec available to handle the selected file:\n\n"
+msgstr "没有可用的音频来源具备处理所选文件的编解码器：\n\n"
 
 #: ../src/resolution_resampler.cpp:289
 msgid "resolution resampling"
@@ -6781,9 +7272,37 @@ msgstr "当前帧时间和序号"
 msgid "Time of this frame relative to start and end of current subs"
 msgstr "该帧时间，相对于当前字幕的开始与结束时间"
 
+#: ../src/video_box.cpp:95
+msgid "Video playback speed"
+msgstr "视频播放速度"
+
+#: ../src/video_box.cpp:265
+msgid "Copied and inserted"
+msgstr "已复制并插入"
+
+#: ../src/video_box.cpp:267
+msgid "Copied to clipboard"
+msgstr "已复制到剪贴板"
+
+#: ../src/video_box.cpp:269
+msgid "Inserted into edit box"
+msgstr "已插入到编辑框"
+
 #: ../src/video_provider_bestsource.cpp:128
 msgid "Scanning"
 msgstr "正在扫描"
+
+#: ../src/video_provider_bestsource.cpp:117
+msgid "Decoding the full track to ensure perfect frame accuracy. This will take a while!"
+msgstr "正在解码整条轨道以确保帧精确，可能需要一些时间！"
+
+#: ../src/video_provider_bestsource.cpp:196
+msgid "BestSource had to fall back to linear decoding. Seeking through the video will be very slow now. You may want to try a different video provider, but note that those are not guaranteed to be frame-exact."
+msgstr "BestSource 已回退到线性解码。现在拖动视频将会非常缓慢。你可以改用其他视频提供程序，但请注意它们不保证帧精确。"
+
+#: ../src/video_provider_bestsource.cpp:196
+msgid "Warning"
+msgstr "警告"
 
 #: ../src/video_provider_vs.cpp:137
 msgid "Executing VapourSynth Script"
@@ -7134,6 +7653,26 @@ msgstr "未配置本地化文件"
 msgid "%d matches"
 msgstr "%d 个匹配"
 
+#: ../src/subs_edit_box.cpp:313
+msgid "Enable fast name set mode."
+msgstr "启用快速命名模式。"
+
+#: ../src/subs_edit_box.cpp:385
+msgid "Insert Japanese bracket pair"
+msgstr "插入日文括号对"
+
+#: ../src/subs_edit_box.cpp:417
+msgid "Better View"
+msgstr "增强视图"
+
+#: ../src/subs_edit_box.cpp:418
+msgid "Display \\N as real line breaks inside the edit box."
+msgstr "在编辑框内将 \\N 显示为真正的换行。"
+
+#: ../src/subs_edit_box.cpp:1282
+msgid "Disable fast name set mode."
+msgstr "关闭快速命名模式。"
+
 #: ../src/dialog_hardsub_scan.cpp ../src/command/vis_tool.cpp
 msgid "Hard Subtitle Scan"
 msgstr "硬字幕扫描"
@@ -7324,6 +7863,18 @@ msgstr "硬字幕扫描因未知错误失败。"
 #: ../src/command/vis_tool.cpp
 msgid "Select a subtitle region, recognize its text and detect precise start/end frames"
 msgstr "选择字幕区域，识别其文本并检测精确的起始/结束帧"
+
+#: ../src/command/vis_tool.cpp:174
+msgid "Motion Track"
+msgstr "运动跟踪"
+
+#: ../src/command/vis_tool.cpp:176
+msgid "Track an object and export After Effects keyframe data"
+msgstr "跟踪一个目标并导出 After Effects 关键帧数据"
+
+#: ../src/command/vis_tool.cpp:186
+msgid "Motion Track requires OpenCV, but this build was configured without OpenCV."
+msgstr "运动跟踪需要 OpenCV，但此版本在编译时未启用 OpenCV。"
 
 #: ../src/ocr/ocr_process.cpp
 msgid "Persistent OCR process is only available on Windows builds."
@@ -7546,6 +8097,10 @@ msgstr "内置 OCR 目前仅在 Windows 发布版中可用。"
 msgid "This build was configured without bundled PaddleOCR support. Build Windows artifacts with -Dpaddleocr=enabled."
 msgstr "此版本未配置内置 PaddleOCR 支持。请使用 -Dpaddleocr=enabled 构建 Windows 版本。"
 
+#: ../src/ocr/ocr_engine.cpp:385
+msgid "\n\nThis folder contains the official PP-OCRv5 Paddle 3/PIR files. The bundled PaddleOCR-json runtime cannot load that model format directly; the Windows packaging step must export the PP-OCRv5 model to the legacy Paddle Inference format first."
+msgstr "\n\n此文件夹包含官方 PP-OCRv5 Paddle 3/PIR 模型文件。内置的 PaddleOCR-json 运行环境无法直接载入该模型格式；Windows 打包步骤需先将 PP-OCRv5 模型导出为旧版 Paddle Inference 格式。"
+
 #: ../src/scan_video_decoder.cpp
 msgid "Failed to open video for scanning: %s"
 msgstr "无法打开视频进行扫描：%s"
@@ -7590,6 +8145,15 @@ msgstr "文本识别仍在进行中，请等待完成后再插入。"
 msgid "The recognized text does not belong to the current region. Recognize the text again before inserting."
 msgstr "识别出的文本不属于当前区域，请重新识别后再插入。"
 
+#: ../src/dialog_hardsub_scan.cpp:996
+#, c-format
+msgid "Hard subtitle recognition failed: %s"
+msgstr "硬字幕识别失败：%s"
+
+#: ../src/dialog_hardsub_scan.cpp:999
+msgid "Hard subtitle recognition failed with an unknown error."
+msgstr "硬字幕识别失败，原因未知。"
+
 #: ../src/dialog_hardsub_scan_video.cpp ../src/command/tool.cpp
 msgid "Hard Subtitle Scan (Whole Video)"
 msgstr "硬字幕扫描（全片）"
@@ -7601,6 +8165,22 @@ msgstr "硬字幕扫描（全片）…"
 #: ../src/command/tool.cpp
 msgid "Scan the whole video for burned-in subtitles in a region and extract their times and text"
 msgstr "扫描整个视频中某一区域内的硬字幕，并提取其时间与文本"
+
+#: ../src/command/tool.cpp:144
+msgid "Image to Text (OCR)"
+msgstr "图片转文字 (OCR)"
+
+#: ../src/command/tool.cpp:146
+msgid "Recognize selectable text from the current video frame"
+msgstr "识别当前视频帧中可选择的文字"
+
+#: ../src/command/tool.cpp:158
+msgid "Detect Text Regions for Mask"
+msgstr "检测用于遮罩的文字区域"
+
+#: ../src/command/tool.cpp:160
+msgid "Detect selectable text regions from the current video frame for masking"
+msgstr "从当前视频帧中检测可用于遮罩的可选文字区域"
 
 #: ../src/dialog_hardsub_scan_video.cpp
 msgid "Region: %d,%d %dx%d"
@@ -7749,6 +8329,572 @@ msgstr "  |  OCR %d"
 #: ../src/dialog_hardsub_scan_video.cpp
 msgid "insert hard subtitle lines"
 msgstr "插入硬字幕行"
+
+#: ../src/dialog_hardsub_scan_video.cpp:371
+msgid "W"
+msgstr "W"
+
+#: ../src/dialog_hardsub_scan_video.cpp:372
+msgid "H"
+msgstr "H"
+
+#: ../src/dialog_hardsub_scan_video.cpp:518
+#, c-format
+msgid "%d"
+msgstr "%d"
+
+#: ../src/dialog_hardsub_scan_video.cpp:529
+#, c-format
+msgid "%d%%"
+msgstr "%d%%"
+
+#: ../src/dialog_hardsub_scan_video.cpp:821
+#, c-format
+msgid "%lld:%02lld:%02lld"
+msgstr "%lld:%02lld:%02lld"
+
+#: ../src/actor_MRU.cpp:39
+msgid "Recent actors"
+msgstr "最近使用的说话人"
+
+#: ../src/actor_MRU.cpp:104
+msgid "Recent actors (empty)"
+msgstr "最近使用的说话人（空）"
+
+#: ../src/actor_MRU.cpp:106
+msgid "inactive"
+msgstr "未激活"
+
+#: ../src/audio_provider_factory.cpp:129
+msgid "Error loading audio"
+msgstr "加载音频时出错"
+
+#: ../src/audio_timing_toshiki.cpp:256
+msgid "Toshiki K-Timing"
+msgstr "Toshiki K-Timing"
+
+#: ../src/dialog_colorpicker_shin.cpp:665
+msgid "gradient only for vsfiltermod"
+msgstr "渐变仅适用于 VSFilterMod"
+
+#: ../src/dialog_colorpicker_shin.cpp:1144
+msgid "Gradient editor is not implemented yet.\n\nThis button is reserved for VSFilterMod gradient support."
+msgstr "渐变编辑器尚未实现。\n\n此按钮预留给 VSFilterMod 渐变支持。"
+
+#: ../src/dialog_mangetsu_gradient.cpp:419
+msgid "Mangetsu Gradient Editor"
+msgstr "Mangetsu 渐变编辑器"
+
+#: ../src/dialog_mangetsu_gradient.cpp:447
+msgid "angle"
+msgstr "角度"
+
+#: ../src/dialog_mangetsu_gradient.cpp:471
+msgid "Lock Placement"
+msgstr "锁定位置区域"
+
+#: ../src/dialog_mangetsu_gradient.cpp:472
+msgid "Lock the gradient to a fixed area of the video.\nEnable this, then drag the area in the video preview.\nOutside the area, Mangetsu uses the line's normal primary color."
+msgstr "将渐变锁定到视频中的固定区域。\n启用后在视频预览中拖出该区域。\n区域之外，Mangetsu 使用该行普通的主色。"
+
+#: ../src/dialog_mangetsu_gradient.cpp:479
+msgid "No box gradients"
+msgstr "无盒式渐变"
+
+#: ../src/dialog_mangetsu_gradient.cpp:482
+msgid "Box gradient tags are not supported by this branch."
+msgstr "此分支不支持盒式渐变标签。"
+
+#: ../src/dialog_mangetsu_gradient.cpp:489
+msgid "Alpha"
+msgstr "透明度"
+
+#: ../src/dialog_mangetsu_gradient.cpp:497
+msgid "+ Stop"
+msgstr "+ 色标"
+
+#: ../src/dialog_mangetsu_gradient.cpp:499
+msgid "Reverse"
+msgstr "反转"
+
+#: ../src/dialog_mangetsu_gradient.cpp:500
+msgid "Flat Zone"
+msgstr "平坦区域"
+
+#: ../src/dialog_mangetsu_gradient.cpp:509
+msgid "OK"
+msgstr "确定"
+
+#: ../src/dialog_mangetsu_gradient.cpp:510
+msgid "Apply"
+msgstr "应用"
+
+#: ../src/dialog_mangetsu_gradient.cpp:629
+msgid "Color *"
+msgstr "颜色 *"
+
+#: ../src/dialog_mangetsu_gradient.cpp:634
+msgid "Alpha *"
+msgstr "透明度 *"
+
+#: ../src/dialog_mangetsu_gradient.cpp:696
+msgid "Keep Current Edit"
+msgstr "保留当前编辑"
+
+#: ../src/dialog_mangetsu_gradient.cpp:696
+msgid "Load Existing"
+msgstr "载入现有"
+
+#: ../src/dialog_mangetsu_gradient.cpp:912
+msgid "The current Gradient Editor does not edit gradients inside transforms."
+msgstr "当前渐变编辑器无法编辑变换标签内的渐变。"
+
+#: ../src/dialog_mangetsu_gradient.cpp:913
+msgid "Placement gradients currently support only the primary fill color."
+msgstr "位置渐变目前仅支持主填充色。"
+
+#: ../src/dialog_mangetsu_gradient.cpp:921
+msgid "A loaded video is required to choose a fixed gradient area."
+msgstr "需要先载入视频才能选择固定渐变区域。"
+
+#: ../src/dialog_mangetsu_gradient.cpp:930
+msgid "The active line is locked; placement editing is unavailable."
+msgstr "当前行已锁定，无法编辑位置区域。"
+
+#: ../src/dialog_mangetsu_gradient.cpp:935
+msgid "Load a video to choose or replace the fixed gradient area."
+msgstr "载入视频以选择或替换固定渐变区域。"
+
+#: ../src/dialog_mangetsu_gradient.cpp:943
+msgid "The video tool is not ready yet. Try again after the video preview has rendered."
+msgstr "视频工具尚未就绪。请等视频预览渲染完成后再试。"
+
+#: ../src/dialog_mangetsu_gradient.cpp:964
+msgid "Drag on the video to replace the fixed gradient area."
+msgstr "在视频上拖动以替换固定渐变区域。"
+
+#: ../src/dialog_mangetsu_gradient.cpp:965
+msgid "Drag on the video to choose the fixed gradient area."
+msgstr "在视频上拖动以选择固定渐变区域。"
+
+#: ../src/dialog_mangetsu_gradient.cpp:1006
+msgid "Fixed gradient area captured."
+msgstr "已捕获固定渐变区域。"
+
+#: ../src/dialog_mangetsu_gradient.cpp:1007
+msgid "set gradient placement"
+msgstr "设置渐变位置区域"
+
+#: ../src/dialog_mangetsu_gradient.cpp:1011
+msgid "Drag a non-zero rectangle in the visible video area."
+msgstr "请在可见视频区域内拖出一个非零矩形。"
+
+#: ../src/dialog_mangetsu_gradient.cpp:1021
+msgid "Placement selection cancelled."
+msgstr "已取消位置区域选择。"
+
+#: ../src/dialog_mangetsu_gradient.cpp:1032
+msgid "Placement selection ended because the video tool changed or the video was closed."
+msgstr "由于视频工具已切换或视频已关闭，位置区域选择已结束。"
+
+#: ../src/dialog_mangetsu_gradient.cpp:1045
+msgid "Placement selection ended because the active subtitle line changed."
+msgstr "由于当前字幕行已改变，位置区域选择已结束。"
+
+#: ../src/dialog_mangetsu_gradient.cpp:1073
+msgid "Gradient placement unlocked."
+msgstr "已解锁渐变位置区域。"
+
+#: ../src/dialog_mangetsu_gradient.cpp:1075
+msgid "unlock gradient placement"
+msgstr "解锁渐变位置区域"
+
+#: ../src/dialog_mangetsu_gradient.cpp:1084
+msgid "Placement gradients inside transforms are not editable in this dialog."
+msgstr "无法在此对话框中编辑变换标签内的位置渐变。"
+
+#: ../src/dialog_mangetsu_gradient.cpp:1096
+msgid "Load a video before choosing a fixed gradient area."
+msgstr "请先载入视频再选择固定渐变区域。"
+
+#: ../src/dialog_mangetsu_gradient.cpp:1103
+msgid "lock gradient placement"
+msgstr "锁定渐变位置区域"
+
+#: ../src/dialog_mangetsu_gradient.cpp:1126
+msgid "set gradient"
+msgstr "设置渐变"
+
+#: ../src/dialog_mangetsu_gradient.cpp:1188
+msgid "Drag a fixed gradient area before changing placement mode."
+msgstr "请先拖出固定渐变区域再更改位置模式。"
+
+#: ../src/dialog_mangetsu_gradient.cpp:1199
+msgid "clear gradient"
+msgstr "清除渐变"
+
+#: ../src/dialog_mangetsu_gradient.cpp:1694
+msgid "Drag a fixed gradient area before applying placement mode."
+msgstr "请先拖出固定渐变区域再应用位置模式。"
+
+#: ../src/dialog_mangetsu_gradient.cpp:1726
+msgid "cancel gradient"
+msgstr "取消渐变"
+
+#: ../src/dialog_motion_track.cpp:647
+msgid "No video frame"
+msgstr "无视频帧"
+
+#: ../src/dialog_motion_track.cpp:871
+msgid "Rot"
+msgstr "旋转"
+
+#: ../src/dialog_motion_track.cpp:876
+msgid "Place and track a marker to plot data"
+msgstr "放置并跟踪标记以绘制数据"
+
+#: ../src/dialog_motion_track.cpp:985
+msgid "Track to Start"
+msgstr "跟踪到起点"
+
+#: ../src/dialog_motion_track.cpp:986
+msgid "Track Previous"
+msgstr "跟踪上一帧"
+
+#: ../src/dialog_motion_track.cpp:987
+msgid "Track Next"
+msgstr "跟踪下一帧"
+
+#: ../src/dialog_motion_track.cpp:988
+msgid "Track to End"
+msgstr "跟踪到终点"
+
+#: ../src/dialog_motion_track.cpp:989
+msgid "Play the selected frame range inside this dialog"
+msgstr "在此对话框内播放所选帧范围"
+
+#: ../src/dialog_motion_track.cpp:990
+msgid "Track backward to the nearest earlier handoff mark, or the selected line start."
+msgstr "反向跟踪到最近的交接标记，或所选行的起点。"
+
+#: ../src/dialog_motion_track.cpp:991
+msgid "Track previous frame"
+msgstr "跟踪上一帧"
+
+#: ../src/dialog_motion_track.cpp:992
+msgid "Track next frame"
+msgstr "跟踪下一帧"
+
+#: ../src/dialog_motion_track.cpp:993
+msgid "Track forward to the nearest later handoff mark, or the selected line end."
+msgstr "跟踪到最近的交接标记，或所选行的终点。"
+
+#: ../src/dialog_motion_track.cpp:1002
+msgid "Mark Handoff Frame"
+msgstr "标记交接帧"
+
+#: ../src/dialog_motion_track.cpp:1003
+msgid "Clear Mark"
+msgstr "清除标记"
+
+#: ../src/dialog_motion_track.cpp:1004
+msgid "Mark the current frame as a handoff point where the next tracker run can start."
+msgstr "将当前帧标记为交接点，下次跟踪可从该处开始。"
+
+#: ../src/dialog_motion_track.cpp:1005
+msgid "Remove the handoff mark from the current frame."
+msgstr "移除当前帧的交接标记。"
+
+#: ../src/dialog_motion_track.cpp:1011
+msgid "Square:"
+msgstr "方块："
+
+#: ../src/dialog_motion_track.cpp:1014
+msgid "Search:"
+msgstr "搜索范围："
+
+#: ../src/dialog_motion_track.cpp:1017
+msgid "Threshold:"
+msgstr "阈值："
+
+#: ../src/dialog_motion_track.cpp:1021
+msgid "Normalize"
+msgstr "归一化"
+
+#: ../src/dialog_motion_track.cpp:1023
+msgid "Normalize pattern and search patches before correlation matching"
+msgstr "在相关匹配前对模板与搜索区域做归一化"
+
+#: ../src/dialog_motion_track.cpp:1028
+msgid "Output:"
+msgstr "输出："
+
+#: ../src/dialog_motion_track.cpp:1030
+msgid "Movement only"
+msgstr "仅位移"
+
+#: ../src/dialog_motion_track.cpp:1031
+msgid "Movement + rotation"
+msgstr "位移 + 旋转"
+
+#: ../src/dialog_motion_track.cpp:1032
+msgid "Movement + size"
+msgstr "位移 + 缩放"
+
+#: ../src/dialog_motion_track.cpp:1033
+msgid "Movement + size + rotation"
+msgstr "位移 + 缩放 + 旋转"
+
+#: ../src/dialog_motion_track.cpp:1035
+msgid "Choose which motion components the tracker should calculate and export."
+msgstr "选择跟踪器需要计算并导出的运动分量。"
+
+#: ../src/dialog_motion_track.cpp:1040
+msgid "Noise Cleanup:"
+msgstr "噪点清理："
+
+#: ../src/dialog_motion_track.cpp:1042
+msgid "None"
+msgstr "无"
+
+#: ../src/dialog_motion_track.cpp:1043
+msgid "Remove tiny jitter"
+msgstr "去除微小抖动"
+
+#: ../src/dialog_motion_track.cpp:1044
+msgid "Remove spikes"
+msgstr "去除尖刺"
+
+#: ../src/dialog_motion_track.cpp:1045
+msgid "Linear cleanup"
+msgstr "线性清理"
+
+#: ../src/dialog_motion_track.cpp:1048
+msgid "Noise threshold:"
+msgstr "噪点阈值："
+
+#: ../src/dialog_motion_track.cpp:1051
+msgid "Pixel threshold used by jitter and spike cleanup."
+msgstr "抖动与尖刺清理使用的像素阈值。"
+
+#: ../src/dialog_motion_track.cpp:1056
+msgid "Show track trail"
+msgstr "显示跟踪轨迹"
+
+#: ../src/dialog_motion_track.cpp:1058
+msgid "Show nearby tracked marker positions in the preview."
+msgstr "在预览中显示附近已跟踪的标记位置。"
+
+#: ../src/dialog_motion_track.cpp:1071
+msgid "Copy Motion Data"
+msgstr "复制运动数据"
+
+#: ../src/dialog_motion_track.cpp:1072
+msgid "Save Data"
+msgstr "保存数据"
+
+#: ../src/dialog_motion_track.cpp:1175
+msgid "Marks: none"
+msgstr "标记：无"
+
+#: ../src/dialog_motion_track.cpp:1615
+msgid "Place a tracker marker before tracking."
+msgstr "请先放置跟踪标记再开始跟踪。"
+
+#: ../src/dialog_motion_track.cpp:1708
+msgid "The current tracker run has reached its handoff frame. Place a new tracker square to continue."
+msgstr "本次跟踪已到达交接帧。请放置新的跟踪方块以继续。"
+
+#: ../src/dialog_motion_track.cpp:1734
+msgid "Tracking was lost before the segment end. Motion data was preserved up to the last valid frame."
+msgstr "片段结束前丢失跟踪。运动数据已保留至最后一个有效帧。"
+
+#: ../src/dialog_motion_track.cpp:1748
+msgid "Tracking failed while reading video frames."
+msgstr "读取视频帧时跟踪失败。"
+
+#: ../src/dialog_motion_track.cpp:1795
+msgid "No motion data to copy."
+msgstr "没有可复制的运动数据。"
+
+#: ../src/dialog_motion_track.cpp:1804
+msgid "No motion data to save."
+msgstr "没有可保存的运动数据。"
+
+#: ../src/dialog_motion_track.cpp:1809
+msgid "Save motion track data"
+msgstr "保存运动跟踪数据"
+
+#: ../src/dialog_motion_track.cpp:1813
+msgid "Text files (*.txt)|*.txt|All files (*.*)|*.*"
+msgstr "文本文件 (*.txt)|*.txt|所有文件 (*.*)|*.*"
+
+#: ../src/dialog_motion_track.cpp:1821
+msgid "Could not open the selected file for writing."
+msgstr "无法打开所选文件进行写入。"
+
+#: ../src/dialog_ocr.cpp:84
+msgid "PP-OCRv5"
+msgstr "PP-OCRv5"
+
+#: ../src/dialog_ocr.cpp:446
+msgid "Copy text"
+msgstr "复制文字"
+
+#: ../src/dialog_ocr.cpp:447
+msgid "Mask this area"
+msgstr "遮罩此区域"
+
+#: ../src/dialog_ocr.cpp:570
+msgid "Current video frame"
+msgstr "当前视频帧"
+
+#: ../src/dialog_ocr.cpp:571
+msgid "Image file"
+msgstr "图片文件"
+
+#: ../src/dialog_ocr.cpp:572
+msgid "Choose image for OCR"
+msgstr "选择用于 OCR 的图片"
+
+#: ../src/dialog_ocr.cpp:572
+msgid "Image files (*.png;*.jpg;*.jpeg;*.bmp;*.webp)|*.png;*.jpg;*.jpeg;*.bmp;*.webp|All files (*.*)|*.*"
+msgstr "图片文件 (*.png;*.jpg;*.jpeg;*.bmp;*.webp)|*.png;*.jpg;*.jpeg;*.bmp;*.webp|所有文件 (*.*)|*.*"
+
+#: ../src/dialog_ocr.cpp:587
+msgid "Keep detected line breaks"
+msgstr "保留检测到的换行"
+
+#: ../src/dialog_ocr.cpp:588
+msgid "Copy to clipboard after OCR"
+msgstr "OCR 后复制到剪贴板"
+
+#: ../src/dialog_ocr.cpp:589
+msgid "Insert into current line after OCR"
+msgstr "OCR 后插入到当前行"
+
+#: ../src/dialog_ocr.cpp:600
+msgid "Result"
+msgstr "结果"
+
+#: ../src/dialog_ocr.cpp:613
+msgid "Recognize"
+msgstr "识别"
+
+#: ../src/dialog_ocr.cpp:615
+msgid "Replace Line..."
+msgstr "替换行…"
+
+#: ../src/dialog_ocr.cpp:742
+msgid "OCR runtime unavailable"
+msgstr "OCR 运行环境不可用"
+
+#: ../src/dialog_ocr.cpp:751
+msgid "OCR"
+msgstr "OCR"
+
+#: ../src/dialog_ocr.cpp:790
+msgid "OCR failed"
+msgstr "OCR 失败"
+
+#: ../src/dialog_ocr.cpp:810
+#, c-format
+msgid "Recognized %d line(s)."
+msgstr "已识别 %d 行。"
+
+#: ../src/dialog_ocr.cpp:825
+msgid "No active subtitle edit box is available."
+msgstr "当前没有可用的字幕编辑框。"
+
+#: ../src/dialog_ocr.cpp:829
+msgid "Inserted OCR text."
+msgstr "已插入 OCR 文本。"
+
+#: ../src/dialog_ocr.cpp:837
+msgid "Copied OCR text to clipboard."
+msgstr "已将 OCR 文本复制到剪贴板。"
+
+#: ../src/dialog_ocr.cpp:858
+msgid "Replace line text"
+msgstr "替换行文本"
+
+#: ../src/dialog_ocr.cpp:858
+msgid "Replace the current subtitle line text with the OCR result?"
+msgstr "是否用 OCR 结果替换当前字幕行的文本？"
+
+#: ../src/dialog_ocr.cpp:862
+msgid "replace line with OCR text"
+msgstr "用 OCR 文本替换当前行"
+
+#: ../src/dialog_ocr.cpp:863
+msgid "Replaced current line text."
+msgstr "已替换当前行文本。"
+
+#: ../src/vcva_tag_gui.cpp:25
+#, c-format
+msgid "Apply a color to %s (%s)"
+msgstr "为 %s 应用颜色（%s）"
+
+#: ../src/vcva_tag_gui.cpp:87
+#, c-format
+msgid "Corner %d"
+msgstr "角落 %d"
+
+#: ../src/vcva_tag_gui.cpp:139
+msgid "slots 1,2,3"
+msgstr "槽位 1,2,3"
+
+#: ../src/vcva_tag_gui.cpp:140
+msgid "slots 1,2,4"
+msgstr "槽位 1,2,4"
+
+#: ../src/vcva_tag_gui.cpp:141
+msgid "slots 1,3,4"
+msgstr "槽位 1,3,4"
+
+#: ../src/vcva_tag_gui.cpp:142
+msgid "slots 2,3,4"
+msgstr "槽位 2,3,4"
+
+#: ../src/vcva_tag_gui.cpp:144
+msgid "top edge"
+msgstr "上边缘"
+
+#: ../src/vcva_tag_gui.cpp:145
+msgid "bottom edge"
+msgstr "下边缘"
+
+#: ../src/vcva_tag_gui.cpp:146
+msgid "left edge"
+msgstr "左边缘"
+
+#: ../src/vcva_tag_gui.cpp:147
+msgid "right edge"
+msgstr "右边缘"
+
+#: ../src/video_display.cpp:829
+msgid "Image2Text mask"
+msgstr "图片转文字遮罩"
+
+#: ../src/video_display.cpp:964
+msgid "Copy text with line breaks"
+msgstr "复制文本（含换行）"
+
+#: ../src/video_display.cpp:974
+msgid "Clear selection"
+msgstr "清除选择"
+
+#: ../src/video_display.cpp:976
+msgid "Exit Image2Text"
+msgstr "退出图片转文字"
+
+#: ../src/video_display.cpp:976
+msgid "Exit detection mode"
+msgstr "退出检测模式"
+
+#: ../src/video_provider_manager.cpp:210
+msgid "Error loading video"
+msgstr "加载视频时出错"
 
 #~ msgid "    Subtitle format handler: %s"
 #~ msgstr "    字幕格式处理器： %s"

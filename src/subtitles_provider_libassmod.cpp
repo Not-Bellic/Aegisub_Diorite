@@ -20,6 +20,8 @@
 ///
 
 #include "subtitles_provider_libassmod.h"
+#include "startup_timing.h"
+#include "subtitles_provider_libassmod_render.h"
 
 #include "ass_attachment.h"
 #include "ass_file.h"
@@ -37,7 +39,6 @@
 
 #include <atomic>
 #include <algorithm>
-#include <boost/gil.hpp>
 #include <cctype>
 #include <cmath>
 #include <cstdint>
@@ -67,10 +68,6 @@
 #include <windows.h>
 #endif
 
-extern "C" {
-#include <ass/ass.h>
-}
-
 #ifndef LIBASSMOD_FEATURE_TAG_IMAGE
 #define LIBASSMOD_FEATURE_TAG_IMAGE 1
 typedef enum {
@@ -78,23 +75,6 @@ typedef enum {
 	ASS_TAG_IMAGE_FORMAT_JPEG = 2,
 	ASS_TAG_IMAGE_FORMAT_WEBP = 3,
 } ASS_TagImageFormat;
-#endif
-
-#ifndef LIBASSMOD_FEATURE_RGBA
-typedef struct ass_image_rgba {
-	int w, h;
-	int stride;
-	uint8_t *rgba;
-	int dst_x, dst_y;
-	int type;
-	struct ass_image_rgba *next;
-} ASS_ImageRGBA;
-
-typedef struct ass_render_result {
-	ASS_Image *imgs;
-	ASS_ImageRGBA *imgs_rgba;
-	int use_rgba;
-} ASS_RenderResult;
 #endif
 
 namespace {
@@ -123,14 +103,12 @@ using AssReadMemoryFunc = ASS_Track *(*)(ASS_Library *, char *, size_t, const ch
 using AssFreeTrackFunc = void (*)(ASS_Track *);
 using AssSetFrameSizeFunc = void (*)(ASS_Renderer *, int, int);
 using AssSetStorageSizeFunc = void (*)(ASS_Renderer *, int, int);
-using AssRenderFrameAutoFunc = ASS_RenderResult (*)(ASS_Renderer *, ASS_Track *, long long, int *);
-using AssFreeImagesRGBAFunc = void (*)(ASS_ImageRGBA *);
 #ifdef LIBASSMOD_FEATURE_TAG_IMAGE
 using AssClearTagImagesFunc = void (*)(ASS_Renderer *);
 using AssSetTagImageRGBAFunc = int (*)(ASS_Renderer *, const char *, ASS_TagImageFormat, int, int, int, const unsigned char *);
 #endif
 
-struct LibassModApi {
+struct LibassModApi : custom_subtitles::RenderApi {
 	LibassModHandle handle = nullptr;
 	AssLibraryInitFunc ass_library_init = nullptr;
 	AssLibraryDoneFunc ass_library_done = nullptr;
@@ -143,8 +121,6 @@ struct LibassModApi {
 	AssFreeTrackFunc ass_free_track = nullptr;
 	AssSetFrameSizeFunc ass_set_frame_size = nullptr;
 	AssSetStorageSizeFunc ass_set_storage_size = nullptr;
-	AssRenderFrameAutoFunc ass_render_frame_auto = nullptr;
-	AssFreeImagesRGBAFunc ass_free_images_rgba = nullptr;
 #ifdef LIBASSMOD_FEATURE_TAG_IMAGE
 	AssClearTagImagesFunc ass_clear_tag_images = nullptr;
 	AssSetTagImageRGBAFunc ass_set_tag_image_rgba = nullptr;
@@ -166,7 +142,8 @@ struct AssCompatBackend {
 	bool api_loaded = false;
 	std::string api_error;
 	std::string loaded_library_name;
-	std::once_flag api_once;
+	std::mutex api_mutex;
+	bool api_attempted = false;
 	ASS_Library *library = nullptr;
 	std::unique_ptr<agi::dispatch::Queue> cache_queue;
 	std::once_flag cache_queue_once;
@@ -331,9 +308,7 @@ bool LoadLibassModApi(AssCompatBackend &backend, std::string &error) {
 		!LoadSymbol(backend, "ass_read_memory", api.ass_read_memory, error) ||
 		!LoadSymbol(backend, "ass_free_track", api.ass_free_track, error) ||
 		!LoadSymbol(backend, "ass_set_frame_size", api.ass_set_frame_size, error) ||
-		!LoadSymbol(backend, "ass_set_storage_size", api.ass_set_storage_size, error) ||
-		!LoadSymbol(backend, "ass_render_frame_auto", api.ass_render_frame_auto, error) ||
-		!LoadSymbol(backend, "ass_free_images_rgba", api.ass_free_images_rgba, error)) {
+		!LoadSymbol(backend, "ass_set_storage_size", api.ass_set_storage_size, error)) {
 		CloseLibassModHandle(backend);
 		return false;
 	}
@@ -341,6 +316,16 @@ bool LoadLibassModApi(AssCompatBackend &backend, std::string &error) {
 	LoadOptionalSymbol(backend, "ass_clear_tag_images", api.ass_clear_tag_images);
 	LoadOptionalSymbol(backend, "ass_set_tag_image_rgba", api.ass_set_tag_image_rgba);
 #endif
+	LoadOptionalSymbol(backend, "ass_composite_images_bgra", api.ass_composite_images_bgra);
+	LoadOptionalSymbol(backend, "ass_render_frame_rgba", api.ass_render_frame_rgba);
+	LoadOptionalSymbol(backend, "ass_free_images_rgba", api.ass_free_images_rgba);
+	LoadOptionalSymbol(backend, "ass_render_frame_auto", api.ass_render_frame_auto);
+	LoadOptionalSymbol(backend, "ass_render_frame", api.ass_render_frame);
+	if (!api.CanRender()) {
+		error = std::string(backend.config.display_name) + " has no usable frame API (RGBA needs ass_free_images_rgba).";
+		CloseLibassModHandle(backend);
+		return false;
+	}
 
 	UpdateLoadedLibraryPath(backend);
 	backend.library = api.ass_library_init();
@@ -353,6 +338,8 @@ bool LoadLibassModApi(AssCompatBackend &backend, std::string &error) {
 	api.ass_set_message_cb(backend.library, msg_callback, &backend);
 	LOG_I(backend.config.log_name) << "Subtitle renderer " << backend.config.display_name
 		<< ": available (loaded " << backend.loaded_library_name << ")";
+	LOG_I(backend.config.log_name) << "Compositing: " << (api.HasDirectRgba() ?
+		(api.ass_composite_images_bgra ? "direct RGBA / native BGRA" : "direct RGBA / host fallback") : "compatibility frame API");
 	if (backend.config.provider_name == std::string("libassmod"))
 		LOG_I(backend.config.log_name) << "libassmod loaded from " << backend.loaded_library_name;
 	else if (backend.config.provider_name == std::string("Mangetsu"))
@@ -360,13 +347,16 @@ bool LoadLibassModApi(AssCompatBackend &backend, std::string &error) {
 	return true;
 }
 
-bool EnsureBackend(AssCompatBackend &backend, std::string *error) {
-	std::call_once(backend.api_once, [&] {
+bool EnsureBackend(AssCompatBackend &backend, std::string *error, bool refresh = false) {
+	std::lock_guard<std::mutex> lock(backend.api_mutex);
+	if (!backend.api_attempted || (refresh && !backend.api_loaded)) {
+		backend.api_attempted = true;
+		backend.api_error.clear();
 		backend.api_loaded = LoadLibassModApi(backend, backend.api_error);
 		if (!backend.api_loaded)
 			LOG_I(backend.config.log_name) << "Subtitle renderer " << backend.config.display_name
 				<< ": unavailable (" << backend.api_error << ")";
-	});
+	}
 	if (!backend.api_loaded && error)
 		*error = backend.api_error;
 	return backend.api_loaded;
@@ -763,6 +753,7 @@ std::vector<std::string> collect_img_paths(const char *data, size_t len) {
 struct cache_thread_shared {
 	AssCompatBackend *backend = nullptr;
 	ASS_Renderer *renderer = nullptr;
+	double initialization_ms = 0;
 	std::atomic<bool> ready{false};
 	~cache_thread_shared() {
 		if (renderer && backend && backend->api.ass_renderer_done)
@@ -974,6 +965,7 @@ LibassModSubtitlesProvider::LibassModSubtitlesProvider(AssCompatBackend &backend
 	auto state = shared;
 	state->backend = &backend;
 	backend.cache_queue->Async([state, &backend] {
+		auto started = std::chrono::steady_clock::now();
 		auto &api = backend.api;
 		auto ass_renderer = api.ass_renderer_init(backend.library);
 		if (ass_renderer) {
@@ -981,18 +973,17 @@ LibassModSubtitlesProvider::LibassModSubtitlesProvider(AssCompatBackend &backend
 			api.ass_set_fonts(ass_renderer, nullptr, "Sans", 1, nullptr, true);
 		}
 		state->renderer = ass_renderer;
+		state->initialization_ms = StartupMilliseconds(started);
 		state->ready = true;
 	});
 }
 
 LibassModSubtitlesProvider::~LibassModSubtitlesProvider() {
+	// The cache job can outlive this provider and application logging.
+	if (shared->ready)
+		LOG_I("startup/renderer") << backend.config.display_name << " renderer/font initialization: " << shared->initialization_ms << " ms";
 	if (ass_track) backend.api.ass_free_track(ass_track);
 }
-
-#define _r(c) ((c)>>24)
-#define _g(c) (((c)>>16)&0xFF)
-#define _b(c) (((c)>>8)&0xFF)
-#define _a(c) ((c)&0xFF)
 
 void LibassModSubtitlesProvider::DrawSubtitles(VideoFrame &frame, double time) {
 	ASS_Renderer *ass_renderer = renderer();
@@ -1004,65 +995,10 @@ void LibassModSubtitlesProvider::DrawSubtitles(VideoFrame &frame, double time) {
 
 	auto &api = backend.api;
 	api.ass_set_frame_size(ass_renderer, frame.width, frame.height);
-	// Note: this relies on Aegisub always rendering at video storage res
+	// Aegisub renders at video storage resolution.
 	api.ass_set_storage_size(ass_renderer, frame.width, frame.height);
-
-	int detect_change = 0;
-	const int time_ms = static_cast<int>(std::floor(time * 1000.0 + 1e-6));
-	ASS_RenderResult render_result = api.ass_render_frame_auto(ass_renderer, ass_track, time_ms, &detect_change);
-
-	// libassmod returns either premultiplied RGBA images or the legacy alpha-masked monochrome list.
-	// Blend whichever list is preferred by the renderer into the frame.
-
-	using namespace boost::gil;
-	auto dst = interleaved_view(frame.width, frame.height, (bgra8_pixel_t*)frame.data.data(), frame.width * 4);
-	if (frame.flipped)
-		dst = flipped_up_down_view(dst);
-
-	if (render_result.use_rgba && render_result.imgs_rgba) {
-		for (ASS_ImageRGBA *img = render_result.imgs_rgba; img; img = img->next) {
-			auto srcview = interleaved_view(img->w, img->h, (rgba8_pixel_t*)img->rgba, img->stride);
-			auto dstview = subimage_view(dst, img->dst_x, img->dst_y, img->w, img->h);
-
-			transform_pixels(dstview, srcview, dstview, [](const bgra8_pixel_t frame_px, const rgba8_pixel_t src_px) -> bgra8_pixel_t {
-				unsigned int alpha = src_px[3];
-				unsigned int inv_alpha = 255 - alpha;
-
-				bgra8_pixel_t ret;
-				ret[0] = static_cast<unsigned char>(src_px[2] + (frame_px[0] * inv_alpha) / 255);
-				ret[1] = static_cast<unsigned char>(src_px[1] + (frame_px[1] * inv_alpha) / 255);
-				ret[2] = static_cast<unsigned char>(src_px[0] + (frame_px[2] * inv_alpha) / 255);
-				ret[3] = 0;
-				return ret;
-			});
-		}
-	}
-	else {
-		for (ASS_Image *img = render_result.imgs; img; img = img->next) {
-			unsigned int opacity = 255 - ((unsigned int)_a(img->color));
-			unsigned int r = (unsigned int)_r(img->color);
-			unsigned int g = (unsigned int)_g(img->color);
-			unsigned int b = (unsigned int)_b(img->color);
-
-			auto srcview = interleaved_view(img->w, img->h, (gray8_pixel_t*)img->bitmap, img->stride);
-			auto dstview = subimage_view(dst, img->dst_x, img->dst_y, img->w, img->h);
-
-			transform_pixels(dstview, srcview, dstview, [=](const bgra8_pixel_t frame_px, const gray8_pixel_t src_px) -> bgra8_pixel_t {
-				unsigned int k = ((unsigned)src_px) * opacity / 255;
-				unsigned int ck = 255 - k;
-
-				bgra8_pixel_t ret;
-				ret[0] = (k * b + ck * frame_px[0]) / 255;
-				ret[1] = (k * g + ck * frame_px[1]) / 255;
-				ret[2] = (k * r + ck * frame_px[2]) / 255;
-				ret[3] = 0;
-				return ret;
-			});
-		}
-	}
-
-	if (render_result.imgs_rgba)
-		api.ass_free_images_rgba(render_result.imgs_rgba);
+	const long long time_ms = static_cast<long long>(std::floor(time * 1000.0 + 1e-6));
+	custom_subtitles::DrawFrame(api, ass_renderer, ass_track, time_ms, frame);
 }
 }
 
@@ -1071,8 +1007,8 @@ std::unique_ptr<SubtitlesProvider> Create(std::string const&, agi::BackgroundRun
 	return agi::make_unique<LibassModSubtitlesProvider>(libassmod_backend, br);
 }
 
-bool IsAvailable(std::string *error) {
-	return EnsureBackend(libassmod_backend, error);
+bool IsAvailable(std::string *error, bool refresh) {
+	return EnsureBackend(libassmod_backend, error, refresh);
 }
 
 std::string PrimaryLibraryName() {
@@ -1110,8 +1046,8 @@ std::unique_ptr<SubtitlesProvider> Create(std::string const&, agi::BackgroundRun
 	return agi::make_unique<LibassModSubtitlesProvider>(mangetsu_backend, br);
 }
 
-bool IsAvailable(std::string *error) {
-	return EnsureBackend(mangetsu_backend, error);
+bool IsAvailable(std::string *error, bool refresh) {
+	return EnsureBackend(mangetsu_backend, error, refresh);
 }
 
 std::string PrimaryLibraryName() {

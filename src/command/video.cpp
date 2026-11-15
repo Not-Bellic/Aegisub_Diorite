@@ -32,6 +32,8 @@
 #include "command.h"
 
 #include "../ass_dialogue.h"
+#include "../audio_controller.h"
+#include "../audio_timing.h"
 #include "../async_video_provider.h"
 #include "../compat.h"
 #include "../dialog_detached_video.h"
@@ -293,13 +295,9 @@ struct video_reload_subtitles_provider final : public cmd::Command {
 		STR_HELP("Reloads the current subtitles provider")
 
 		void operator()(agi::Context* c) override {
-		auto providers = SubtitlesProviderFactory::GetClasses();
-		if (providers.empty()) return;
-
-		auto it = find(begin(providers), end(providers), OPT_GET("Subtitle/Provider")->GetString());
-
-		OPT_SET("Subtitle/Provider")->SetString(*it);
-		c->frame->StatusTimeout(fmt_tl("Subtitles provider set to %s", *it), 5000);
+		auto const provider = OPT_GET("Subtitle/Provider")->GetString();
+		OPT_SET("Subtitle/Provider")->SetString(provider);
+		c->frame->StatusTimeout(fmt_tl("Subtitles provider set to %s", provider), 5000);
 	}
 };
 
@@ -754,6 +752,12 @@ struct video_play final : public validator_video_loaded {
 	STR_HELP("Play video starting on this position")
 
 	void operator()(agi::Context *c) override {
+		auto timing = c->audioController->GetTimingController();
+		if (timing && timing->Is39SessionActive()) {
+			c->audioController->Stop();
+			c->videoController->Stop();
+			return;
+		}
 		c->videoController->Play();
 	}
 };

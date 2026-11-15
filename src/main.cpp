@@ -33,7 +33,9 @@
 ///
 
 #include "main.h"
+#include "startup_timing.h"
 
+#include "ass_file.h"
 #include "command/command.h"
 #include "include/aegisub/hotkey.h"
 
@@ -49,6 +51,8 @@
 #include "include/aegisub/context.h"
 #include "libresrc/libresrc.h"
 #include "options.h"
+#include "mangetsu_renderer_offer.h"
+#include "include/aegisub/subtitles_provider.h"
 #include "project.h"
 #include "subs_controller.h"
 #include "subtitles_provider_libass.h"
@@ -85,6 +89,10 @@ wxIMPLEMENT_APP(AegisubApp);
 
 static const char *LastStartupState = nullptr;
 
+void LogStartupTiming(char const *stage) {
+	LOG_I("startup/timing") << stage << ": " << StartupMilliseconds(StartupStarted()) << " ms since OnInit";
+}
+
 #ifdef WITH_STARTUPLOG
 #define StartupLog(a) MessageBox(0, L ## a, L"Aegisub startup log", 0)
 #else
@@ -111,6 +119,7 @@ static wxString exception_message = "Oops, Aegisub has crashed!\n\nAn attempt ha
 /// @brief Gets called when application starts.
 /// @return bool
 bool AegisubApp::OnInit() {
+	StartupStarted() = std::chrono::steady_clock::now();
 	// App name (yeah, this is a little weird to get rid of an odd warning)
 #if defined(__WXMSW__) || defined(__WXMAC__)
 	SetAppName("Aegisub");
@@ -207,6 +216,7 @@ bool AegisubApp::OnInit() {
 	}
 
 	try {
+		config::opt->RegisterOptional(MangetsuRendererOfferKey);
 		config::opt->ConfigUser();
 		// Drop deprecated playback speed persistence; runtime-only now.
 		config::opt->Remove("Video/Playback/Speed");
@@ -228,9 +238,9 @@ bool AegisubApp::OnInit() {
 #endif
 
 #if defined(__WXMSW__) && wxVERSION_NUMBER >= 3300
-	bool dark_mode = OPT_GET("App/Dark Mode")->GetBool();
-	libresrc_set_dark_icons_enabled(dark_mode);
-	if (dark_mode) {
+	dark_mode_at_startup = OPT_GET("App/Dark Mode")->GetBool();
+	libresrc_set_dark_icons_enabled(dark_mode_at_startup);
+	if (dark_mode_at_startup) {
 		MSWEnableDarkMode(wxApp::DarkMode_Always);
 	}
 #endif
@@ -288,9 +298,8 @@ bool AegisubApp::OnInit() {
 
 		// Load plugins
 		Automation4::ScriptFactory::Register(agi::make_unique<Automation4::LuaScriptFactory>());
-		libass::CacheFonts();
-		libassmod::CacheFonts();
-		mangetsu::CacheFonts();
+		// Font discovery happens when the selected subtitle provider is opened.
+		// Do not warm three separate font indexes for two unused renderers.
 
 		// Load Automation scripts
 		StartupLog("Load global Automation scripts");
@@ -307,6 +316,31 @@ bool AegisubApp::OnInit() {
 		// Open main frame
 		StartupLog("Create main window");
 		NewProjectContext();
+		// Start only after the event loop has had an opportunity to paint and
+		// service the frame. The manager constructor performs no file or Lua work.
+		Bind(wxEVT_IDLE, [this, pending = true](wxIdleEvent& event) mutable {
+			if (pending && !frames.empty()) {
+				pending = false;
+				config::global_scripts->Reload();
+				CallAfter([this] {
+					if (frames.empty() || config::opt->Has(MangetsuRendererOfferKey)) return;
+					wxString ci;
+					if (wxGetEnv("CI", &ci) && ci == "true") return;
+					// This one-time offer needs only Mangetsu, never a provider enumeration.
+					std::vector<std::string> providers;
+					if (OPT_GET("Subtitle/Provider")->GetString() == "Mangetsu" || mangetsu::IsAvailable())
+						providers.push_back("Mangetsu");
+					if (HandleMangetsuRendererOffer(*config::opt, providers, [this]() -> std::optional<bool> {
+						return wxMessageBox(_("New renderer \"Mangetsu\" added. Would you like to use it?"),
+							_("Subtitle renderer"), wxYES_NO | wxCENTER, frames.front()) == wxYES;
+					})) {
+						try { config::opt->Flush(); }
+						catch (agi::fs::FileSystemError const& e) { LOG_E("startup/migration") << e.GetMessage(); }
+					}
+				});
+			}
+			event.Skip();
+		});
 
 		// Version checker
 		StartupLog("Possibly perform automatic updates check");
@@ -353,10 +387,14 @@ bool AegisubApp::OnInit() {
 	CleanCache(config::path->Decode(OPT_GET("Path/Auto/Save")->GetString()), "*.AUTOSAVE.ass", 100, 1000);
 
 	StartupLog("Initialization complete");
+	LogStartupTiming("Application initialization");
 	return true;
 }
 
 int AegisubApp::OnExit() {
+	bool const should_restart = restart_on_exit;
+	wxArrayString const arguments = restart_arguments;
+
 	for (auto frame : frames)
 		delete frame;
 	frames.clear();
@@ -366,12 +404,13 @@ int AegisubApp::OnExit() {
 		wxTheClipboard->Close();
 	}
 
+	delete config::global_scripts;
+	config::global_scripts = nullptr;
+
 	delete config::opt;
 	delete config::mru;
 	hotkey::clear();
 	cmd::clear();
-
-	delete config::global_scripts;
 
 	AssExportFilterChain::Clear();
 
@@ -379,7 +418,10 @@ int AegisubApp::OnExit() {
 	delete agi::log::log;
 	crash_writer::Cleanup();
 
-	return wxApp::OnExit();
+	int const exit_code = wxApp::OnExit();
+	if (should_restart)
+		RestartAegisub(arguments);
+	return exit_code;
 }
 
 agi::Context& AegisubApp::NewProjectContext() {
@@ -404,6 +446,36 @@ void AegisubApp::CloseAll() {
 		if (!frame->Close())
 			break;
 	}
+}
+
+bool AegisubApp::RequestRestart(agi::Context *context) {
+	wxArrayString arguments;
+	auto add_argument = [&](agi::fs::path const& path) {
+		if (path.empty()) return;
+		wxString argument(path.wstring());
+		if (arguments.Index(argument) == wxNOT_FOUND)
+			arguments.Add(argument);
+	};
+
+	// Work on a copy because accepted close events schedule frames for deletion.
+	auto frames_to_close = frames;
+	for (auto frame : frames_to_close) {
+		if (!frame->Close())
+			return false;
+
+		// Capture paths after Close(), as saving an untitled file may have assigned
+		// it a filename. The normal command-line loader restores linked project
+		// state from the subtitle file and directly supplied media paths.
+		if (frame->context.get() == context) {
+			add_argument(context->ass->Filename);
+			add_argument(context->project->VideoName());
+			add_argument(context->project->AudioName());
+		}
+	}
+
+	restart_arguments = std::move(arguments);
+	restart_on_exit = true;
+	return true;
 }
 
 void AegisubApp::UnhandledException(bool stackWalk) {

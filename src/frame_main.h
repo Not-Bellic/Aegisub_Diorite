@@ -28,6 +28,7 @@
 // Aegisub Project http://www.aegisub.org/
 
 #include <memory>
+#include <libaegisub/signal.h>
 #include <wx/frame.h>
 #include <wx/timer.h>
 
@@ -36,6 +37,10 @@ class AsyncVideoProvider;
 class AudioBox;
 class VideoBox;
 class wxWindow;
+class wxGauge;
+class wxStaticText;
+class wxHyperlinkCtrl;
+namespace Automation4 { struct AutoloadProgress; }
 namespace agi { class AudioProvider; }
 namespace agi { struct Context; class OptionValue; }
 
@@ -55,7 +60,19 @@ class FrameMain : public wxFrame {
 	int fileLockWarnings = 0; // Satoshi: count how many times save hit a lock
 	wxTimer StatusClear;   ///< Status bar timeout timer
 	wxTimer AlignmentPickerTimer;
+	wxTimer automation_hide_timer;
+	agi::signal::Connection automation_progress_connection;
+	wxWindow *automation_panel = nullptr;
+	wxStaticText *automation_title = nullptr;
+	wxStaticText *automation_file = nullptr;
+	wxStaticText *automation_count = nullptr;
+	wxGauge *automation_gauge = nullptr;
+	wxHyperlinkCtrl *automation_warning = nullptr;
+	void UpdateAutomationProgress(Automation4::AutoloadProgress const& progress);
 	wxWindow *alignmentPicker = nullptr;
+	wxWindow *mainPanel = nullptr;
+	wxWindow *timing39Countdown = nullptr;
+	void Position39Countdown();
 	int alignmentPickerPreview = 0;
 	int alignmentPickerSelected = 0;
 	int alignmentPickerPendingArrows = 0;
@@ -102,6 +119,8 @@ public:
 	/// @param video -1: leave unchanged; 0: hide; 1: show
 	/// @param audio -1: leave unchanged; 0: hide; 1: show
 	void SetDisplayMode(int showVid,int showAudio);
+	/// A raised child overlay, outside all layout sizers; zero hides it.
+	void Show39Countdown(int number);
 
 	bool IsVideoShown() const { return showVideo; }
 	bool IsAudioShown() const { return showAudio; }

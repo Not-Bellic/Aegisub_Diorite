@@ -33,6 +33,7 @@
 ///
 
 #include "subtitles_provider_libass.h"
+#include "startup_timing.h"
 
 #include "compat.h"
 #include "include/aegisub/subtitles_provider.h"
@@ -81,6 +82,7 @@ void msg_callback(int level, const char *fmt, va_list args, void *) {
 // gets deleted before the cache finishing updating
 struct cache_thread_shared {
 	ASS_Renderer *renderer = nullptr;
+	double initialization_ms = 0;
 	std::atomic<bool> ready{false};
 	~cache_thread_shared() { if (renderer) ass_renderer_done(renderer); }
 };
@@ -146,17 +148,23 @@ LibassSubtitlesProvider::LibassSubtitlesProvider(agi::BackgroundRunner *br)
 {
 	auto state = shared;
 	cache_queue->Async([state] {
+		auto started = std::chrono::steady_clock::now();
 		auto ass_renderer = ass_renderer_init(library);
 		if (ass_renderer) {
 			ass_set_font_scale(ass_renderer, 1.);
 			ass_set_fonts(ass_renderer, nullptr, "Sans", 1, nullptr, true);
 		}
 		state->renderer = ass_renderer;
+		state->initialization_ms = StartupMilliseconds(started);
 		state->ready = true;
 	});
 }
 
 LibassSubtitlesProvider::~LibassSubtitlesProvider() {
+	// The cache job can outlive the provider. Report on the owning lifetime,
+	// while application logging still exists, rather than from the cache job.
+	if (shared->ready)
+		LOG_I("startup/renderer") << "libass renderer/font initialization: " << shared->initialization_ms << " ms";
 	if (ass_track) ass_free_track(ass_track);
 }
 
@@ -208,22 +216,23 @@ void LibassSubtitlesProvider::DrawSubtitles(VideoFrame &frame,double time) {
 
 namespace libass {
 std::unique_ptr<SubtitlesProvider> Create(std::string const&, agi::BackgroundRunner *br) {
+	// A renderer is created only when actually selected. Initialize its library
+	// and work queue here, rather than starting font scans for every backend on
+	// application launch.
+	CacheFonts();
 	return agi::make_unique<LibassSubtitlesProvider>(br);
 }
 
 void CacheFonts() {
-	// Initialize the cache worker thread
-	cache_queue = agi::dispatch::Create();
-
-	// Initialize libass
-	library = ass_library_init();
-	ass_set_message_cb(library, msg_callback, nullptr);
-
-	// Initialize a renderer to force fontconfig to update its cache
-	cache_queue->Async([] {
-		auto ass_renderer = ass_renderer_init(library);
-		ass_set_fonts(ass_renderer, nullptr, "Sans", 1, nullptr, true);
-		ass_renderer_done(ass_renderer);
+	static std::once_flag once;
+	std::call_once(once, [] {
+		library = ass_library_init();
+		if (!library)
+			throw agi::InternalError("libass failed to initialize.");
+		ass_set_message_cb(library, msg_callback, nullptr);
+		cache_queue = agi::dispatch::Create();
 	});
+	// The first actual provider queues ass_set_fonts() on its renderer.
+	// Do not create a throwaway renderer merely to scan the same fonts again.
 }
 }

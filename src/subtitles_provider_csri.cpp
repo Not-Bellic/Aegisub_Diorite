@@ -36,10 +36,13 @@
 #include "subtitles_provider_csri.h"
 
 #include "include/aegisub/subtitles_provider.h"
+#include "options.h"
 #include "subtitle_format_ass.h"
 #include "video_frame.h"
 
+#include <libaegisub/log.h>
 #include <libaegisub/make_unique.h>
+#include <libaegisub/path.h>
 
 #include <mutex>
 
@@ -48,11 +51,34 @@
 #endif
 
 #include <csri/csri.h>
+#include <csri/logging.h>
 
 namespace {
 // CSRI renderers are not required to be thread safe (and VSFilter very much
 // is not)
 std::mutex csri_mutex;
+
+// CSRI reports plugin discovery and load failures through an optional logging
+// extension. Without a callback those messages go to stderr and are lost.
+void CSRI_log_callback(void *, csri_logging_severity severity, const char *message) {
+	switch (severity) {
+	case CSRI_LOG_ERROR: LOG_E("subtitle/provider/csri") << message; break;
+	case CSRI_LOG_WARNING: LOG_W("subtitle/provider/csri") << message; break;
+	case CSRI_LOG_NOTICE:
+	case CSRI_LOG_INFO: LOG_D("subtitle/provider/csri") << message; break;
+	default: break;
+	}
+}
+
+// Must run before the first enumeration so plugin load failures reach the log.
+void InitCSRILogging() {
+	static std::once_flag once;
+	std::call_once(once, [] {
+		auto *ext = static_cast<csri_logging_ext *>(csri_query_ext(nullptr, CSRI_EXT_LOGGING));
+		if (ext && ext->set_logcallback)
+			ext->set_logcallback(CSRI_log_callback, nullptr);
+	});
+}
 
 struct closer {
 	void operator()(csri_inst *inst) { if (inst) csri_close(inst); }
@@ -75,6 +101,7 @@ public:
 
 CSRISubtitlesProvider::CSRISubtitlesProvider(std::string type) {
 	std::lock_guard<std::mutex> lock(csri_mutex);
+	InitCSRILogging();
 	for (csri_rend *cur = csri_renderer_default(); cur; cur = csri_renderer_next(cur)) {
 		if (type == csri_renderer_info(cur)->name) {
 			renderer = cur;
@@ -83,7 +110,7 @@ CSRISubtitlesProvider::CSRISubtitlesProvider(std::string type) {
 	}
 
 	if (!renderer)
-		throw agi::InternalError("CSRI renderer vanished between initial list and creation?");
+		throw agi::InternalError("renderer is not registered by the CSRI library");
 }
 
 void CSRISubtitlesProvider::DrawSubtitles(VideoFrame &dst, double time) {
@@ -111,6 +138,7 @@ void CSRISubtitlesProvider::DrawSubtitles(VideoFrame &dst, double time) {
 namespace csri {
 std::vector<std::string> List() {
 	std::lock_guard<std::mutex> lock(csri_mutex);
+	InitCSRILogging();
 	std::vector<std::string> final;
 	for (csri_rend *cur = csri_renderer_default(); cur; cur = csri_renderer_next(cur)) {
 		std::string name(csri_renderer_info(cur)->name);
@@ -120,6 +148,15 @@ std::vector<std::string> List() {
 			final.push_back(name);
 	}
 	return final;
+}
+
+std::string PluginDirectory() {
+#ifdef _WIN32
+	if (!config::path) return {};
+	return config::path->Decode("?data/csri").string();
+#else
+	return {};
+#endif
 }
 
 std::unique_ptr<SubtitlesProvider> Create(std::string const& name, agi::BackgroundRunner *) {

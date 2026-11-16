@@ -23,5 +23,7 @@ namespace agi { class BackgroundRunner; }
 
 namespace csri {
 	std::vector<std::string> List();
+	/// Directory scanned for CSRI plugins, for diagnostics; empty if unknown.
+	std::string PluginDirectory();
 	std::unique_ptr<SubtitlesProvider> Create(std::string const& subtype, agi::BackgroundRunner *br);
 }

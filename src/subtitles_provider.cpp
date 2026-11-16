@@ -26,6 +26,7 @@
 
 #include <libaegisub/log.h>
 
+#include <algorithm>
 #include <mutex>
 #include <set>
 
@@ -44,7 +45,10 @@ namespace {
 		static std::set<std::string> warned;
 		std::lock_guard<std::mutex> lock(mutex);
 		if (!warned.insert(provider).second) return;
-		auto message = provider + " unavailable. Trying fallback subtitle renderers. (" + error + ")";
+		std::string detail = error;
+		while (!detail.empty() && (detail.back() == '\n' || detail.back() == '\r'))
+			detail.pop_back();
+		auto message = provider + " unavailable. Trying fallback subtitle renderers. (" + detail + ")";
 		LOG_W("subtitle/provider") << message;
 		wxLogWarning("%s", to_wx(message));
 	}
@@ -100,14 +104,27 @@ std::unique_ptr<SubtitlesProvider> SubtitlesProviderFactory::GetProvider(agi::Ba
 		catch (...) { error += entry.name + ": Unknown error\n"; }
 		return nullptr;
 	};
-	// The selected factory is tried directly. No availability probes of other
-	// renderers, DLL loads or CSRI enumeration are needed on the success path.
+	// The selected factory is tried directly. For non-CSRI providers no
+	// availability probes of other renderers, DLL loads or CSRI enumeration are
+	// needed on the success path.
 	for (auto const& entry : factories())
 		if (entry.name == preferred)
 			if (auto provider = create(entry)) return provider;
 #ifdef WITH_CSRI
-	if (preferred.compare(0, 5, "CSRI/") == 0)
-		if (auto provider = create(factory{preferred, preferred.substr(5), csri::Create})) return provider;
+	if (preferred.compare(0, 5, "CSRI/") == 0) {
+		auto const subtype = preferred.substr(5);
+		auto const installed = csri::List();
+		if (std::find(installed.begin(), installed.end(), subtype) == installed.end()) {
+			// The provider would enumerate CSRI on creation anyway; doing it here
+			// turns a stale preference into an accurate diagnostic.
+			error += preferred + ": renderer is not installed";
+			auto const directory = csri::PluginDirectory();
+			if (!directory.empty())
+				error += "; CSRI plugins are loaded from \"" + directory + "\"";
+			error += "\n";
+		}
+		else if (auto provider = create(factory{preferred, subtype, csri::Create})) return provider;
+	}
 #endif
 	if (error.empty()) error = preferred + ": renderer is not registered in this build.\n";
 	WarnFallbackOnce(preferred, error);

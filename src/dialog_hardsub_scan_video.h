@@ -98,6 +98,11 @@ class DialogHardSubScanVideo final : public wxDialog {
 	bool scanning_ = false;
 	std::atomic<bool> cancel_scan_{false};
 	std::atomic<int> scan_ocr_samples_{0};
+	/// Time spent inside the OCR engine and inside the PNG encode that feeds it,
+	/// summed over the samples of the current scan. Their ratio is what tells a
+	/// "the scan is still slow" report apart from "OCR is the slow part".
+	std::atomic<long long> scan_ocr_ms_{0};
+	std::atomic<long long> scan_encode_ms_{0};
 	std::thread scan_thread_;
 	std::shared_ptr<OcrWarmState> ocr_full_state_;
 	std::vector<hardsub::TimelineRowEvent> events_;

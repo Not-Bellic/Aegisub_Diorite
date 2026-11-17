@@ -51,6 +51,11 @@ public:
 	/// True while a reusable engine (child process, session) is loaded.
 	virtual bool IsRunning() const = 0;
 
+	/// Short name of the engine that actually runs (`onnx`, `paddle`,
+	/// `paddle-oneshot`), for logs and diagnostics. Empty until Start()
+	/// succeeded.
+	virtual std::string Name() const = 0;
+
 	/// Run one image. The result carries its own diagnostic when the call
 	/// fails, so callers never need a second availability query.
 	virtual OCRResult Run(agi::fs::path const& image_path, OCROptions const& options,

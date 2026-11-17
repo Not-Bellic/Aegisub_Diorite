@@ -155,12 +155,15 @@ std::string Usage() {
 }
 
 std::string BuildReport(Request const &request, OCRResult const &result, double start_ms,
-                        double run_ms, bool started, std::string const &start_diagnostic) {
+                        double run_ms, bool started, std::string const &start_diagnostic,
+                        std::string const &engine) {
 	std::string json = "{\n";
 	json += "  \"ok\": ";
 	json += result.ok ? "true" : "false";
 	json += ",\n  \"backend\": \"";
 	json += BackendKindId(request.backend);
+	json += "\",\n  \"engine\": \"";
+	json += EscapeJson(engine);
 	json += "\",\n  \"engine_started\": ";
 	json += started ? "true" : "false";
 	json += ",\n  \"mode\": \"";
@@ -263,6 +266,9 @@ bool SelfTestRequested(std::vector<std::string> const &arguments) {
 
 		OCRResult result;
 		double run_ms = 0.0;
+		// Name() is empty once Stop() ran, and in `auto` mode it is the only way
+		// to see which engine actually handled the image.
+		std::string const engine_name = started ? backend->Name() : std::string();
 		if (started) {
 			auto const run_begin = std::chrono::steady_clock::now();
 			result = backend->Run(request.image, OCROptions{},
@@ -274,7 +280,8 @@ bool SelfTestRequested(std::vector<std::string> const &arguments) {
 			result.diagnostic = start_diagnostic;
 		}
 
-		report = BuildReport(request, result, start_ms, run_ms, started, start_diagnostic);
+		report = BuildReport(request, result, start_ms, run_ms, started, start_diagnostic,
+		                     engine_name);
 		if (!result.ok)
 			code = 2;
 		else if (!result.lines.empty())

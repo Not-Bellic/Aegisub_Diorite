@@ -22,6 +22,7 @@
 #include <libaegisub/log.h>
 
 #include <cctype>
+#include <chrono>
 #include <mutex>
 #include <string>
 #include <utility>
@@ -73,6 +74,10 @@ public:
 
 	bool IsRunning() const override {
 		return active && active->IsRunning();
+	}
+
+	std::string Name() const override {
+		return active ? active->Name() : std::string();
 	}
 
 	OCRResult Run(agi::fs::path const &image_path, OCROptions const &options, OcrMode mode,
@@ -219,13 +224,18 @@ OCRResult RunShared(agi::fs::path const &image_path, OCROptions const &options, 
 
 		auto backend = MakeBackend(ConfiguredBackendKind(), config);
 		std::string diagnostic;
+		auto const start = std::chrono::steady_clock::now();
 		if (backend && backend->Start(diagnostic)) {
+			LOG_I("ocr/backend") << "using " << backend->Name() << " (started in "
+				<< std::chrono::duration_cast<std::chrono::milliseconds>(
+					std::chrono::steady_clock::now() - start).count() << " ms)";
 			state.backend = std::move(backend);
 		}
 		else {
 			state.diagnostic = diagnostic.empty()
 				? std::string("The OCR engine could not be started.")
 				: diagnostic;
+			LOG_E("ocr/backend") << "no OCR engine: " << state.diagnostic;
 		}
 	}
 

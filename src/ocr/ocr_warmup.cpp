@@ -15,6 +15,7 @@
 #include "ocr_warmup.h"
 
 #include <libaegisub/dispatch.h>
+#include <libaegisub/log.h>
 
 #include <algorithm>
 #include <chrono>
@@ -33,10 +34,14 @@ void StartOcrWarmup(std::shared_ptr<OcrWarmState> const &state) {
 		try {
 			auto backend = ocr::MakeBackend(ocr::ConfiguredBackendKind(), state->config);
 			std::string diagnostic;
+			auto const start = std::chrono::steady_clock::now();
 			bool const started = backend && backend->Start(diagnostic);
 
 			std::lock_guard<std::mutex> lock(state->mutex);
 			if (started) {
+				LOG_I("ocr/warmup") << "engine " << backend->Name() << " ready in "
+					<< std::chrono::duration_cast<std::chrono::milliseconds>(
+						std::chrono::steady_clock::now() - start).count() << " ms";
 				state->backend = std::shared_ptr<ocr::OcrBackend>(std::move(backend));
 				state->diagnostic.clear();
 			}
@@ -46,6 +51,8 @@ void StartOcrWarmup(std::shared_ptr<OcrWarmState> const &state) {
 			else {
 				state->diagnostic = diagnostic;
 			}
+			if (!started)
+				LOG_E("ocr/warmup") << "no OCR engine: " << state->diagnostic;
 			// Mark the attempt finished even on failure: waiters would otherwise
 			// block for the full timeout when no runtime is installed.
 			state->ready = true;

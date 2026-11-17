@@ -171,6 +171,8 @@ public:
 
 	bool IsRunning() const override { return started; }
 
+	std::string Name() const override { return started ? "onnx" : std::string(); }
+
 	OCRResult Run(agi::fs::path const &image_path, OCROptions const &options, OcrMode mode,
 	              std::function<bool()> const &cancel) override {
 		OCRResult result;

@@ -33,6 +33,7 @@ class PaddleBackend final : public OcrBackend {
 	OCRProcessConfig config;
 	OCRProcess process;
 	bool process_started = false;
+	bool started = false;
 
 public:
 	explicit PaddleBackend(OCRProcessConfig const& cfg) : config(cfg) {}
@@ -50,12 +51,14 @@ public:
 		// command line, so they are fixed for the lifetime of the process.
 		if (process.Start(executable, models_dir, config_path, diagnostic, config)) {
 			process_started = true;
+			started = true;
 			diagnostic.clear();
 			return true;
 		}
 
 		// Starting the pipe mode is not fatal: the one-shot engine may still
 		// work and Run() will use it. Keep the reason out of the way.
+		started = true;
 		diagnostic.clear();
 		return true;
 	}
@@ -63,10 +66,17 @@ public:
 	void Stop() override {
 		process.Stop();
 		process_started = false;
+		started = false;
 	}
 
 	bool IsRunning() const override {
 		return process_started && process.IsRunning();
+	}
+
+	std::string Name() const override {
+		if (!started)
+			return {};
+		return IsRunning() ? "paddle" : "paddle-oneshot";
 	}
 
 	OCRResult Run(agi::fs::path const& image_path, OCROptions const& options,

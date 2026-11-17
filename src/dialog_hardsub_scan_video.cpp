@@ -45,6 +45,7 @@
 #include <libaegisub/ass/time.h>
 #include <libaegisub/dispatch.h>
 #include <libaegisub/fs.h>
+#include <libaegisub/log.h>
 #include <libaegisub/make_unique.h>
 
 #include <boost/algorithm/string/replace.hpp>
@@ -150,6 +151,12 @@ wxImage FitToMax(wxImage img, int max_side) {
 		                std::max(1, static_cast<int>(h * s)), wxIMAGE_QUALITY_BICUBIC);
 	}
 	return img;
+}
+
+/// Milliseconds since `from`, for the per-scan OCR cost report.
+long long ElapsedMs(std::chrono::steady_clock::time_point from) {
+	return std::chrono::duration_cast<std::chrono::milliseconds>(
+		std::chrono::steady_clock::now() - from).count();
 }
 
 /// Calls `fn` under a SEH guard. Returns 0 on success, or the SEH exception code
@@ -661,6 +668,9 @@ void DialogHardSubScanVideo::OnScan(wxCommandEvent&) {
 	cancel_scan_ = false;
 	scanning_ = true;
 	events_.clear();
+	scan_ocr_samples_ = 0;
+	scan_ocr_ms_ = 0;
+	scan_encode_ms_ = 0;
 	PopulateResults();
 	progress->SetRange(1000);
 	progress->SetValue(0);
@@ -704,15 +714,20 @@ void DialogHardSubScanVideo::OnScan(wxCommandEvent&) {
 				handler->scan_ocr_samples_.fetch_add(1);
 				wxString temp;
 				TempPngGuard guard(temp);
+				auto const encode_begin = std::chrono::steady_clock::now();
 				wxImage img = FitToMax(BuildImage(crop, 1), 1600);
 				if (!img.IsOk())
 					return;
 				temp = wxFileName::CreateTempFileName("aegisub-hardsub-");
 				if (temp.empty() || !img.SaveFile(temp, wxBITMAP_TYPE_PNG))
 					return;
+				handler->scan_encode_ms_.fetch_add(ElapsedMs(encode_begin));
 				ocr::OCRResult tmp;
-				if (!RunBackend(rec_backend, agi::fs::path(std::wstring(temp.wc_str())),
-				                ocr_options, ocr::OcrMode::DetectOnly, cancel, tmp))
+				auto const ocr_begin = std::chrono::steady_clock::now();
+				bool const ok = RunBackend(rec_backend, agi::fs::path(std::wstring(temp.wc_str())),
+				                           ocr_options, ocr::OcrMode::DetectOnly, cancel, tmp);
+				handler->scan_ocr_ms_.fetch_add(ElapsedMs(ocr_begin));
+				if (!ok)
 					return;
 				double sx = static_cast<double>(crop.width) / img.GetWidth();
 				double sy = static_cast<double>(crop.height) / img.GetHeight();
@@ -732,6 +747,7 @@ void DialogHardSubScanVideo::OnScan(wxCommandEvent&) {
 			int code = GuardSEH([&] {
 				wxString temp;
 				TempPngGuard guard(temp);
+				auto const encode_begin = std::chrono::steady_clock::now();
 				// Only upscale genuinely small crops. The detector downscales
 				// anything wider than its input cap, so upscaling an ordinary
 				// line buys no extra glyph detail and roughly triples the cost.
@@ -742,9 +758,13 @@ void DialogHardSubScanVideo::OnScan(wxCommandEvent&) {
 				temp = wxFileName::CreateTempFileName("aegisub-hardsub-");
 				if (temp.empty() || !img.SaveFile(temp, wxBITMAP_TYPE_PNG))
 					return;
+				handler->scan_encode_ms_.fetch_add(ElapsedMs(encode_begin));
 				ocr::OCRResult tmp;
-				if (!RunBackend(rec_backend, agi::fs::path(std::wstring(temp.wc_str())),
-				                ocr_options, ocr::OcrMode::Full, cancel, tmp))
+				auto const ocr_begin = std::chrono::steady_clock::now();
+				bool const ok = RunBackend(rec_backend, agi::fs::path(std::wstring(temp.wc_str())),
+				                           ocr_options, ocr::OcrMode::Full, cancel, tmp);
+				handler->scan_ocr_ms_.fetch_add(ElapsedMs(ocr_begin));
+				if (!ok)
 					return;
 				out = std::move(tmp);
 			});
@@ -857,8 +877,20 @@ void DialogHardSubScanVideo::OnScanDone(ValueEvent<HardSubScanVideoOutcome>& eve
 	else if (outcome.ok) {
 		events_ = std::move(outcome.events);
 		PopulateResults();
-		SetStatus(wxString::Format(_("Scan complete: %d lines detected."),
-			static_cast<int>(events_.size())));
+		int const samples = scan_ocr_samples_.load();
+		long long const ocr_ms = scan_ocr_ms_.load();
+		long long const encode_ms = scan_encode_ms_.load();
+		LOG_I("hardsub/scan/ocr") << samples << " samples, " << ocr_ms << " ms in the engine, "
+			<< encode_ms << " ms encoding the crops";
+		if (samples > 0) {
+			SetStatus(wxString::Format(
+				_("Scan complete: %d lines detected (OCR %d samples, %.1f s)."),
+				static_cast<int>(events_.size()), samples, ocr_ms / 1000.0));
+		}
+		else {
+			SetStatus(wxString::Format(_("Scan complete: %d lines detected."),
+				static_cast<int>(events_.size())));
+		}
 	}
 	else {
 		SetStatus(to_wx(outcome.error));

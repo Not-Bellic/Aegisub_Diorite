@@ -63,4 +63,10 @@ public:
 /// learn whether anything is usable.
 std::unique_ptr<OcrBackend> MakePaddleBackend(OCRProcessConfig const& config);
 
+/// The in-process ONNX Runtime backend (PP-OCRv6 small detector and
+/// recognizer). Never returns nullptr: Start() reports a missing runtime,
+/// model files or dictionary instead, so a build without the OCR bundle simply
+/// keeps the feature disabled.
+std::unique_ptr<OcrBackend> MakeOnnxBackend();
+
 } // namespace ocr

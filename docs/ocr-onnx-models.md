@@ -91,8 +91,33 @@ The ONNX pair reproduces the PaddleOCR-json results on the same frames:
 | `bottom_021600.png` | `Ah, the little one can wait for us in the living room.` | 0.991 |
 | `bottom_012600.png` (no subtitle) | (no boxes) | — |
 
+## Packaging layout
+
+`tools\ocr\download_onnx_ocr.ps1 -DestinationDir build\installer-deps\ocr` fetches
+the assets, verifies every file's size and SHA-256 and lays them out as:
+
+```text
+ocr/
+  onnx/
+    onnxruntime.dll
+    onnxruntime_providers_shared.dll
+    ppocrv6_small_det.onnx
+    ppocrv6_small_rec.onnx
+    ppocrv6_dict.txt
+    LICENSE.onnxruntime.txt
+    ThirdPartyNotices.onnxruntime.txt
+    VERSION.txt
+  licenses/
+    THIRD_PARTY_ONNX_OCR.txt
+```
+
+The backend resolves that folder through `?data/ocr/onnx`; `AEGISUB_OCR_ASSETS`
+overrides it, which is what the unit and integration tests use. When the folder
+is missing, `ocr::MakeOnnxBackend()->Start()` fails with a diagnostic and the
+OCR actions stay disabled instead of crashing.
+
 ## Updating the assets
 
 Publish a new release (`ocr-models-v2`) instead of replacing files under an
 existing tag, then update the file names and hashes in
-`tools/ocr/download_onnx_ocr.ps1`.
+`tools/ocr/download_onnx_ocr.ps1` and this document.

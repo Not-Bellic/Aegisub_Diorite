@@ -30,7 +30,7 @@
 #include "hardsub_region_tool.h"
 #include "include/aegisub/context.h"
 #include "libresrc/libresrc.h"
-#include "ocr/ocr_engine.h"
+#include "ocr/ocr_backend.h"
 #include "ocr/ocr_process.h"
 #include "options.h"
 #include "persist_location.h"
@@ -81,7 +81,7 @@
 /// outlive it without joining.
 struct OcrWarmState {
 	std::mutex mutex;
-	std::shared_ptr<ocr::OCRProcess> process;
+	std::shared_ptr<ocr::OcrBackend> backend;
 	std::atomic<bool> ready{false};
 	ocr::OCRProcessConfig config{true, false, false};
 };
@@ -161,11 +161,11 @@ wxImage FitToMax(wxImage img, int max_side) {
 	return img;
 }
 
-/// Blocks until the pre-warmed OCR engine is ready (or `timeout_ms` elapses) and
-/// returns it. The scan thread must NOT start its own engine: the dialog already
-/// warms one at open, and starting a second concurrently (then stopping the
-/// half-loaded duplicate) is what can crash inside the process/pipe runtime.
-std::shared_ptr<ocr::OCRProcess> WaitForEngine(std::shared_ptr<OcrWarmState> const& state,
+/// Blocks until the pre-warmed OCR backend is ready (or `timeout_ms` elapses)
+/// and returns it. The scan thread must NOT start its own engine: the dialog
+/// already warms one at open, and starting a second concurrently (then stopping
+/// the half-loaded duplicate) is what can crash inside the process/pipe runtime.
+std::shared_ptr<ocr::OcrBackend> WaitForEngine(std::shared_ptr<OcrWarmState> const& state,
                                                int timeout_ms) {
 	if (!state)
 		return {};
@@ -176,7 +176,7 @@ std::shared_ptr<ocr::OCRProcess> WaitForEngine(std::shared_ptr<OcrWarmState> con
 		std::this_thread::sleep_for(std::chrono::milliseconds(50));
 	}
 	std::lock_guard<std::mutex> lock(state->mutex);
-	return state->process;
+	return state->backend;
 }
 
 /// Calls `fn` under a SEH guard. Returns 0 on success, or the SEH exception code
@@ -193,35 +193,16 @@ int GuardSEH(std::function<void()> const& fn) {
 	}
 }
 
-// The OCR runtime is bundled only on Windows; the one-shot engine is the
-// fallback elsewhere. Returning false means OCR is unavailable.
-bool StartDetector(agi::fs::path const& image_path, ocr::OCROptions const& options,
-                   std::shared_ptr<ocr::OCRProcess> const& proc,
-                   std::function<bool()> const& cancel, ocr::OCRResult& out) {
-	if (proc)
-		out = proc->RunImage(image_path, options, true, cancel);
-	else {
-		ocr::OCREngine engine;
-		if (engine.GetDetectionDiagnostic(options).empty())
-			out = engine.DetectTextRegions(image_path, options);
-		else
-			return false;
-	}
-	return out.ok;
-}
-
-bool RunRecognizer(agi::fs::path const& image_path, ocr::OCROptions const& options,
-                   std::shared_ptr<ocr::OCRProcess> const& proc,
-                   std::function<bool()> const& cancel, ocr::OCRResult& out) {
-	if (proc)
-		out = proc->RunImage(image_path, options, false, cancel);
-	else {
-		ocr::OCREngine engine;
-		if (engine.GetDiagnostic(options).empty())
-			out = engine.RecognizeImage(image_path, options);
-		else
-			return false;
-	}
+// Runs one image through the warmed backend. The backend reports its own
+// diagnostic when the runtime is unusable, so a false return only means "no
+// result for this image".
+bool RunBackend(std::shared_ptr<ocr::OcrBackend> const& backend,
+                agi::fs::path const& image_path, ocr::OCROptions const& options,
+                ocr::OcrMode mode, std::function<bool()> const& cancel,
+                ocr::OCRResult& out) {
+	if (!backend)
+		return false;
+	out = backend->Run(image_path, options, mode, cancel);
 	return out.ok;
 }
 
@@ -290,8 +271,8 @@ DialogHardSubScanVideo::~DialogHardSubScanVideo() {
 		if (!state) return;
 		{
 			std::lock_guard<std::mutex> lock(state->mutex);
-			if (state->process)
-				state->process->Stop();
+			if (state->backend)
+				state->backend->Stop();
 		}
 		state.reset();
 	};
@@ -737,14 +718,14 @@ void DialogHardSubScanVideo::OnScan(wxCommandEvent&) {
 		ocr_options.use_angle_cls = false;
 		ocr_options.det_limit_side_len =
 			ReadIntOption("Tool/OCR/Detect Limit Side Len", 0);
-		std::shared_ptr<ocr::OCRProcess> rec_proc;
+		std::shared_ptr<ocr::OcrBackend> rec_backend;
 		std::function<ocr::OCRResult(hardsub::RegionImage const&)> detect;
 		std::function<ocr::OCRResult(hardsub::RegionImage const&)> recognize;
 		// Use a single full-pipeline engine for both detection (client-side
 		// read-only boxes) and recognition, so the OCR response shape is always
 		// the well-tested full-pipeline format.
-		rec_proc = WaitForEngine(handler->ocr_full_state_, 10000);
-		detect = [handler, rec_proc, ocr_options, cancel](hardsub::RegionImage const& crop) -> ocr::OCRResult {
+		rec_backend = WaitForEngine(handler->ocr_full_state_, 10000);
+		detect = [handler, rec_backend, ocr_options, cancel](hardsub::RegionImage const& crop) -> ocr::OCRResult {
 			ocr::OCRResult out;
 			int code = GuardSEH([&] {
 				handler->scan_ocr_samples_.fetch_add(1);
@@ -757,8 +738,8 @@ void DialogHardSubScanVideo::OnScan(wxCommandEvent&) {
 				if (temp.empty() || !img.SaveFile(temp, wxBITMAP_TYPE_PNG))
 					return;
 				ocr::OCRResult tmp;
-				if (!StartDetector(agi::fs::path(std::wstring(temp.wc_str())), ocr_options,
-				                   rec_proc, cancel, tmp))
+				if (!RunBackend(rec_backend, agi::fs::path(std::wstring(temp.wc_str())),
+				                ocr_options, ocr::OcrMode::DetectOnly, cancel, tmp))
 					return;
 				double sx = static_cast<double>(crop.width) / img.GetWidth();
 				double sy = static_cast<double>(crop.height) / img.GetHeight();
@@ -773,7 +754,7 @@ void DialogHardSubScanVideo::OnScan(wxCommandEvent&) {
 				return ocr::OCRResult();
 			return out;
 		};
-		recognize = [handler, rec_proc, ocr_options, cancel](hardsub::RegionImage const& crop) -> ocr::OCRResult {
+		recognize = [handler, rec_backend, ocr_options, cancel](hardsub::RegionImage const& crop) -> ocr::OCRResult {
 			ocr::OCRResult out;
 			int code = GuardSEH([&] {
 				wxString temp;
@@ -789,8 +770,8 @@ void DialogHardSubScanVideo::OnScan(wxCommandEvent&) {
 				if (temp.empty() || !img.SaveFile(temp, wxBITMAP_TYPE_PNG))
 					return;
 				ocr::OCRResult tmp;
-				if (!RunRecognizer(agi::fs::path(std::wstring(temp.wc_str())), ocr_options,
-				                   rec_proc, cancel, tmp))
+				if (!RunBackend(rec_backend, agi::fs::path(std::wstring(temp.wc_str())),
+				                ocr_options, ocr::OcrMode::Full, cancel, tmp))
 					return;
 				out = std::move(tmp);
 			});
@@ -1074,31 +1055,31 @@ void DialogHardSubScanVideo::OnVideoChanged(AsyncVideoProvider *provider) {
 }
 
 void DialogHardSubScanVideo::StartOcrWarmup() {
-	// Warm both engines in the background while the user picks a region, so that
-	// the moment they click Scan the models are already loaded (a synchronous
-	// load at click time would otherwise block the scan for several seconds and
-	// leave the window looking frozen).
+	// Warm the OCR backend in the background while the user picks a region, so
+	// that the moment they click Scan the models are already loaded (a
+	// synchronous load at click time would otherwise block the scan for several
+	// seconds and leave the window looking frozen).
 	auto start_one = [](std::shared_ptr<OcrWarmState> state) {
 		if (!state)
 			return;
 		agi::dispatch::Background().Async([state] {
 			try {
-				auto process = std::make_shared<ocr::OCRProcess>();
-				agi::fs::path executable, models_dir, config_path;
+				auto backend = ocr::MakePaddleBackend(state->config);
 				std::string diagnostic;
-				if (ocr::OCRProcess::FindRuntime(executable, models_dir, config_path, diagnostic)
-				    && process->Start(executable, models_dir, config_path, diagnostic,
-				                      state->config)) {
+				bool started = backend && backend->Start(diagnostic);
+				{
 					std::lock_guard<std::mutex> lock(state->mutex);
-					if (!state->process || !state->process->IsRunning())
-						state->process = std::move(process);
-					else
-						process->Stop();
-					state->ready = true;
+					if (started)
+						state->backend = std::shared_ptr<ocr::OcrBackend>(std::move(backend));
 				}
+				// Mark the attempt finished even on failure: waiting callers
+				// otherwise block for the full warm-up timeout when no OCR
+				// runtime is installed.
+				state->ready = true;
 			}
 			catch (...) {
 				// OCR startup failure must never crash the app.
+				state->ready = true;
 			}
 		});
 	};

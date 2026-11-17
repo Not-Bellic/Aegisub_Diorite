@@ -142,6 +142,7 @@ aegisub_src = files(
     'motion_tracking/motion_track_commit.cpp',
     'ocr/ocr_engine.cpp',
     'ocr/ocr_process.cpp',
+    'ocr/paddle_backend.cpp',
     'pen.cpp',
     'perspective_geometry.cpp',
     'persist_location.cpp',

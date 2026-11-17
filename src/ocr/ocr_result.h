@@ -37,6 +37,15 @@ struct OCRResult {
 struct OCROptions {
 	bool keep_line_breaks = true;
 	std::string language = "japanese";
+	/// Run the 0/180 degree angle classifier. Burned-in subtitles are always
+	/// horizontal, so the classifier only spends time on video frames; callers
+	/// that may feed rotated text can turn it back on.
+	bool use_angle_cls = false;
+	/// Longest side of the image fed to the detector, in pixels. 0 keeps the
+	/// runtime default (960). A wide scan region is downscaled to this length
+	/// before detection, so a larger value keeps small glyphs detectable at a
+	/// roughly proportional cost.
+	int det_limit_side_len = 0;
 };
 
 std::string NormalizeText(std::vector<OCRLine> const& lines, bool keep_line_breaks);

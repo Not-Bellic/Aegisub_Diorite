@@ -704,9 +704,15 @@ OCRResult OCREngine::RunImage(agi::fs::path const& image_path, OCROptions const&
 	if (detect_only) {
 		command += " -det=true";
 		command += " -rec=false";
+	}
+	// The angle classifier only distinguishes 0 and 180 degrees, which never
+	// happens on burned-in video subtitles, so it is skipped by default.
+	if (detect_only || !options.use_angle_cls) {
 		command += " -cls=false";
 		command += " -use_angle_cls=false";
 	}
+	if (options.det_limit_side_len > 0)
+		command += wxString::Format(" -limit_side_len=%d", options.det_limit_side_len);
 
 	wxArrayString output;
 	wxArrayString errors;

@@ -158,6 +158,8 @@ bool OCRProcess::Start(agi::fs::path const& executable, agi::fs::path const& mod
 	command += config.cls ? L" -cls=true" : L" -cls=false";
 	if (!config.cls)
 		command += L" -use_angle_cls=false";
+	if (config.det_limit_side_len > 0)
+		command += L" -limit_side_len=" + std::to_wstring(config.det_limit_side_len);
 
 	PROCESS_INFORMATION pi;
 	std::memset(&pi, 0, sizeof(pi));

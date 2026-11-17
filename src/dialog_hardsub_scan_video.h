@@ -35,6 +35,7 @@
 
 class wxButton;
 class wxCheckBox;
+class wxChoice;
 class wxGauge;
 class wxListCtrl;
 class wxSpinCtrl;
@@ -71,6 +72,7 @@ class DialogHardSubScanVideo final : public wxDialog {
 	wxSpinCtrl *center_band_spin = nullptr;
 	wxSpinCtrl *min_duration_spin = nullptr;
 	wxSpinCtrl *detect_every_spin = nullptr;
+	wxChoice *scan_scale_choice = nullptr;
 	wxCheckBox *merge_check = nullptr;
 	wxCheckBox *replace_newlines_check = nullptr;
 	wxSpinCtrl *region_x_spin = nullptr;
@@ -112,6 +114,7 @@ class DialogHardSubScanVideo final : public wxDialog {
 	void PopulateResults();
 	void AppendResultRow(hardsub::TimelineRowEvent const& ev);
 	std::vector<size_t> ResultIndices() const;
+	int SelectedScanScale() const;
 	void ActivateRegionTool();
 	void StartOcrWarmup();
 

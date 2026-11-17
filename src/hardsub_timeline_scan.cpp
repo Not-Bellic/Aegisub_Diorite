@@ -19,11 +19,14 @@
 
 #include "hardsub_timeline_scan.h"
 
+#include "localization/localization_matcher.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <cstdint>
 #include <cstring>
+#include <map>
 #include <numeric>
 #include <utility>
 
@@ -33,6 +36,11 @@ namespace {
 
 int Clamp(int v, int lo, int hi) {
 	return std::max(lo, std::min(hi, v));
+}
+
+/// Size of `value` after the scan's resolution factor, never smaller than 1.
+int ScaledDimension(int value, double scale) {
+	return std::max(1, static_cast<int>(std::lround(value * scale)));
 }
 
 unsigned char Luma(unsigned char r, unsigned char g, unsigned char b) {
@@ -249,6 +257,199 @@ bool RowPassesCenterFilter(TimelineRect const& rect, int region_w, double center
 
 namespace {
 
+/// Comparison options for two readings of the same subtitle: fuzzy, tag,
+/// punctuation and case insensitive.
+localization::MatchOptions OcrMatchOptions() {
+	localization::MatchOptions options;
+	options.fuzzy = true;
+	options.ignore_tags = true;
+	options.ignore_punctuation = true;
+	options.ignore_case = true;
+	return options;
+}
+
+/// Vertical overlap between two boxes, in pixels.
+int VerticalOverlap(TimelineRect const& a, TimelineRect const& b) {
+	int top = std::max(a.y, b.y);
+	int bottom = std::min(a.y + a.h, b.y + b.h);
+	return std::max(0, bottom - top);
+}
+
+} // namespace
+
+std::string NormalizeOcrText(std::string const& text) {
+	return localization::Normalize(text, OcrMatchOptions());
+}
+
+int OcrCharCount(std::string const& text) {
+	int count = 0;
+	for (unsigned char c : text) {
+		if ((c & 0xC0) != 0x80)
+			++count;
+	}
+	return count;
+}
+
+double OcrTextSimilarity(std::string const& a, std::string const& b) {
+	return localization::Similarity(a, b);
+}
+
+double MinimumOcrConfidence(int text_chars) {
+	if (text_chars <= 1)
+		return 0.90;
+	if (text_chars <= 3)
+		return 0.75;
+	if (text_chars <= 7)
+		return 0.62;
+	return 0.55;
+}
+
+std::string VoteBestOcrText(std::vector<std::pair<std::string, double>> const& candidates) {
+	size_t n = candidates.size();
+	if (n == 0)
+		return {};
+	if (n == 1)
+		return candidates[0].first;
+
+	// Union-find over normalized similarity: readings of the same subtitle
+	// cluster together even when one of them is misread.
+	std::vector<size_t> parent(n);
+	std::iota(parent.begin(), parent.end(), size_t(0));
+	auto find = [&](size_t x) {
+		while (parent[x] != x) {
+			parent[x] = parent[parent[x]];
+			x = parent[x];
+		}
+		return x;
+	};
+	auto unite = [&](size_t a, size_t b) { parent[find(a)] = find(b); };
+
+	std::vector<std::string> normalized(n);
+	for (size_t i = 0; i < n; ++i)
+		normalized[i] = NormalizeOcrText(candidates[i].first);
+	for (size_t i = 0; i < n; ++i) {
+		if (normalized[i].empty())
+			continue;
+		for (size_t j = i + 1; j < n; ++j) {
+			if (!normalized[j].empty()
+			    && OcrTextSimilarity(normalized[i], normalized[j]) >= 0.6)
+				unite(i, j);
+		}
+	}
+
+	std::map<size_t, std::vector<size_t>> clusters;
+	for (size_t i = 0; i < n; ++i)
+		clusters[find(i)].push_back(i);
+
+	double best_score = -1.0;
+	std::string best_text;
+	for (auto const& entry : clusters) {
+		double confidence = 0.0;
+		for (size_t idx : entry.second)
+			confidence += candidates[idx].second;
+		// Member count dominates; total confidence breaks ties, and a longer
+		// consensus text wins the final tie-break.
+		double score = entry.second.size() * 1000.0 + confidence;
+		std::string cluster_text;
+		for (size_t idx : entry.second) {
+			if (candidates[idx].first.size() > cluster_text.size())
+				cluster_text = candidates[idx].first;
+		}
+		if (score > best_score || (score == best_score && cluster_text.size() > best_text.size())) {
+			best_score = score;
+			best_text = std::move(cluster_text);
+		}
+	}
+	return best_text;
+}
+
+std::vector<TimelineRowEvent> DedupeTimelineEvents(std::vector<TimelineRowEvent> events,
+                                                   int min_text_chars,
+                                                   double text_similarity,
+                                                   int max_gap_frames) {
+	std::vector<TimelineRowEvent> kept;
+	if (events.empty())
+		return kept;
+
+	// Longest first, so a duplicate folds into the row that covers the most
+	// frames. Ties prefer the more confident reading.
+	std::stable_sort(events.begin(), events.end(),
+	                 [](TimelineRowEvent const& a, TimelineRowEvent const& b) {
+		int da = a.end_frame - a.start_frame;
+		int db = b.end_frame - b.start_frame;
+		if (da != db)
+			return da > db;
+		if (a.confidence != b.confidence)
+			return a.confidence > b.confidence;
+		return a.start_frame < b.start_frame;
+	});
+
+	for (auto& ev : events) {
+		std::string const text = NormalizeOcrText(ev.text);
+		if (OcrCharCount(text) < std::max(1, min_text_chars))
+			continue;
+
+		bool merged = false;
+		for (auto& other : kept) {
+			std::string const other_text = NormalizeOcrText(other.text);
+			if (text.empty() || other_text.empty())
+				continue;
+
+			bool same_text = other_text == text
+				|| OcrTextSimilarity(other_text, text) >= text_similarity;
+			if (!same_text)
+				continue;
+
+			int shorter_h = std::min(other.row_region.h, ev.row_region.h);
+			bool same_row = shorter_h > 0
+				&& VerticalOverlap(other.row_region, ev.row_region) * 2 >= shorter_h;
+			if (!same_row)
+				continue;
+
+			int overlap = std::min(other.end_frame, ev.end_frame)
+				- std::max(other.start_frame, ev.start_frame) + 1;
+			int shorter = std::min(other.end_frame - other.start_frame + 1,
+			                       ev.end_frame - ev.start_frame + 1);
+			if (overlap > 0 && shorter > 0 && overlap * 10 >= shorter * 8) {
+				other.start_frame = std::min(other.start_frame, ev.start_frame);
+				other.end_frame = std::max(other.end_frame, ev.end_frame);
+				if (ev.confidence > other.confidence) {
+					other.confidence = ev.confidence;
+					other.text = ev.text;
+					other.ocr_verified = ev.ocr_verified;
+				}
+				merged = true;
+				break;
+			}
+
+			// A split track shows up as identical text with a couple of frames
+			// in between; stitch it back rather than emit two rows.
+			if (max_gap_frames > 0) {
+				int gap = std::max(other.start_frame, ev.start_frame)
+					- std::min(other.end_frame, ev.end_frame) - 1;
+				if (gap >= 0 && gap <= max_gap_frames) {
+					other.start_frame = std::min(other.start_frame, ev.start_frame);
+					other.end_frame = std::max(other.end_frame, ev.end_frame);
+					merged = true;
+					break;
+				}
+			}
+		}
+		if (!merged)
+			kept.push_back(ev);
+	}
+
+	std::stable_sort(kept.begin(), kept.end(),
+	                 [](TimelineRowEvent const& a, TimelineRowEvent const& b) {
+		if (a.start_frame != b.start_frame)
+			return a.start_frame < b.start_frame;
+		return a.row_region.y < b.row_region.y;
+	});
+	return kept;
+}
+
+namespace {
+
 struct RowTrack {
 	int band = 0;
 	std::vector<unsigned char> signature;
@@ -288,7 +489,19 @@ TimelineScanResult ScanVideoTimeline(TimelineScanOptions const& opts,
 	const int detect_every = std::max(1, opts.detect_every);
 	const int detect_every_max = std::max(detect_every, opts.detect_every_max);
 	const int settle_confirm = std::max(1, opts.confirm_frames);
-	const int band_size = std::max(8, opts.region_h / 6);
+
+	// All scan processing runs in "scan coordinates": a version of the region
+	// reduced by `scan_scale`. Only the box reported back to the caller is
+	// converted to video coordinates.
+	const double scale = opts.scan_scale > 0.0
+		? std::clamp(opts.scan_scale, 0.05, 1.0)
+		: 1.0;
+	const int scan_region_w = ScaledDimension(opts.region_w, scale);
+	const int scan_region_h = ScaledDimension(opts.region_h, scale);
+	const bool downscale = scan_region_w != opts.region_w || scan_region_h != opts.region_h;
+	const double video_per_scan_x = static_cast<double>(opts.region_w) / scan_region_w;
+	const double video_per_scan_y = static_cast<double>(opts.region_h) / scan_region_h;
+	const int band_size = std::max(8, scan_region_h / 6);
 	constexpr double kChangeHigh = 0.25;
 	constexpr double kChangeLow = 0.08;
 	constexpr double kSignatureMatch = 0.25;
@@ -315,7 +528,12 @@ TimelineScanResult ScanVideoTimeline(TimelineScanOptions const& opts,
 		auto frame = loader(f);
 		if (!frame)
 			continue;
-		auto reg = CropRegion(*frame, opts.region_x, opts.region_y, opts.region_w, opts.region_h);
+		auto reg = downscale
+			? CropRegionScaled(*frame, opts.region_x, opts.region_y,
+			                   opts.region_w, opts.region_h,
+			                   scan_region_w, scan_region_h)
+			: CropRegion(*frame, opts.region_x, opts.region_y,
+			             opts.region_w, opts.region_h);
 		if (!reg.Valid())
 			continue;
 
@@ -365,13 +583,13 @@ TimelineScanResult ScanVideoTimeline(TimelineScanOptions const& opts,
 			det = ocr::OCRResult();
 		}
 		std::vector<ocr::OCRLine> lines = det.ok ? det.lines : std::vector<ocr::OCRLine>{};
-		auto clusters = ClusterRows(lines, opts.region_h);
+		auto clusters = ClusterRows(lines, scan_region_h);
 
 		for (auto const& c : clusters) {
 			TimelineRect rect = c.second;
 			if (!rect.Valid())
 				continue;
-			bool center_ok = RowPassesCenterFilter(rect, opts.region_w, opts.center_band);
+			bool center_ok = RowPassesCenterFilter(rect, scan_region_w, opts.center_band);
 			if (opts.center_only && !center_ok)
 				continue;
 			auto crop = CropRegionImage(prev, rect);
@@ -440,8 +658,12 @@ TimelineScanResult ScanVideoTimeline(TimelineScanOptions const& opts,
 		auto frame = loader(rep);
 		if (!frame)
 			continue;
-		auto region = CropRegion(*frame, opts.region_x, opts.region_y,
-		                         opts.region_w, opts.region_h);
+		auto region = downscale
+			? CropRegionScaled(*frame, opts.region_x, opts.region_y,
+			                   opts.region_w, opts.region_h,
+			                   scan_region_w, scan_region_h)
+			: CropRegion(*frame, opts.region_x, opts.region_y,
+			             opts.region_w, opts.region_h);
 		if (!region.Valid())
 			continue;
 
@@ -455,7 +677,7 @@ TimelineScanResult ScanVideoTimeline(TimelineScanOptions const& opts,
 		try {
 			ocr::OCRResult det = detect(region);
 			if (det.ok && !det.lines.empty()) {
-				auto clusters = ClusterRows(det.lines, opts.region_h);
+				auto clusters = ClusterRows(det.lines, scan_region_h);
 				TimelineRect best;
 				double best_d = 1e18;
 				for (auto const& c : clusters) {
@@ -490,21 +712,161 @@ TimelineScanResult ScanVideoTimeline(TimelineScanOptions const& opts,
 		row_box.w = box.w + 2 * px;
 		row_box.h = box.h + 2 * py;
 
-		TimelineRect rv;
-		rv.x = opts.region_x + row_box.x;
-		rv.y = opts.region_y + row_box.y;
-		rv.w = row_box.w;
-		rv.h = row_box.h;
+		// `row_box` is in scan coordinates; convert it to original-region
+		// coordinates for the report and for cropping the full-resolution
+		// template that the boundary scan compares against.
+		TimelineRect row_box_region;
+		row_box_region.x = static_cast<int>(std::lround(row_box.x * video_per_scan_x));
+		row_box_region.y = static_cast<int>(std::lround(row_box.y * video_per_scan_y));
+		row_box_region.w = std::max(1, static_cast<int>(std::lround(row_box.w * video_per_scan_x)));
+		row_box_region.h = std::max(1, static_cast<int>(std::lround(row_box.h * video_per_scan_y)));
 
-		auto tpl = CropRegion(*frame, rv.x, rv.y, rv.w, rv.h);
+		TimelineRect rv;
+		rv.x = opts.region_x + row_box_region.x;
+		rv.y = opts.region_y + row_box_region.y;
+		rv.w = row_box_region.w;
+		rv.h = row_box_region.h;
+
+		// The template keeps the scan-coordinate size so it matches what the
+		// per-frame downscaled region looks like; the boundary scan crops the
+		// full-resolution source rectangle and resamples it to this size.
+		auto tpl = downscale
+			? CropRegionScaled(*frame, rv.x, rv.y, rv.w, rv.h, row_box.w, row_box.h)
+			: CropRegion(*frame, rv.x, rv.y, rv.w, rv.h);
 		if (!tpl.Valid())
 			continue;
+
+		// Recognition uses a tight, full-resolution crop of the detected line.
+		// The padded `tpl` above is right for the coverage scan (it needs stable
+		// background context), but wrong for the recognizer: padding the height
+		// by a third squeezes the glyphs once the crop is normalized to 48 px,
+		// and the background around the text is what short readings hallucinate
+		// on. `frame` must not be touched past this point: the frame loader
+		// reuses its buffer for every subsequent frame.
+		TimelineRect text_region;
+		text_region.x = static_cast<int>(std::lround(box.x * video_per_scan_x));
+		text_region.y = static_cast<int>(std::lround(box.y * video_per_scan_y));
+		text_region.w = std::max(1, static_cast<int>(std::lround(box.w * video_per_scan_x)));
+		text_region.h = std::max(1, static_cast<int>(std::lround(box.h * video_per_scan_y)));
+
+		int margin_x = std::max(2, text_region.w / 20);
+		int margin_y = std::max(1, text_region.h / 10);
+		TimelineRect rec_region;
+		rec_region.x = std::max(0, text_region.x - margin_x);
+		rec_region.y = std::max(0, text_region.y - margin_y);
+		rec_region.w = std::min(opts.region_w - rec_region.x,
+		                        text_region.w + 2 * margin_x);
+		rec_region.h = std::min(opts.region_h - rec_region.y,
+		                        text_region.h + 2 * margin_y);
+		if (rec_region.w <= 0 || rec_region.h <= 0)
+			continue;
+
+		// Read one frame with the caller's recognizer, keeping only lines that
+		// clear the length-aware confidence bar. Returns false when the frame
+		// carries no usable text.
+		auto read_frame = [&](int frame_index, std::string& text, double& confidence) {
+			auto frame_data = loader(frame_index);
+			if (!frame_data)
+				return false;
+			auto crop = CropRegion(*frame_data,
+			                       opts.region_x + rec_region.x,
+			                       opts.region_y + rec_region.y,
+			                       rec_region.w, rec_region.h);
+			if (!crop.Valid())
+				return false;
+
+			ocr::OCRResult rec;
+			try {
+				rec = recognize(crop);
+			}
+			catch (...) {
+				return false;
+			}
+			if (!rec.ok)
+				return false;
+
+			std::vector<ocr::OCRLine> kept;
+			for (auto const& line : rec.lines) {
+				if (line.text.empty())
+					continue;
+				int chars = OcrCharCount(NormalizeOcrText(line.text));
+				if (line.confidence < MinimumOcrConfidence(chars))
+					continue;
+				// PaddleOCR can report the same line twice (two overlapping
+				// detection boxes); keep the first occurrence so the text is
+				// not duplicated.
+				bool duplicate = false;
+				for (auto const& seen : kept) {
+					if (seen.text == line.text) {
+						duplicate = true;
+						break;
+					}
+				}
+				if (!duplicate)
+					kept.push_back(line);
+			}
+			if (kept.empty())
+				return false;
+
+			text.clear();
+			confidence = 0.0;
+			for (size_t k = 0; k < kept.size(); ++k) {
+				if (k)
+					text += "\n";
+				text += kept[k].text;
+				confidence += kept[k].confidence;
+			}
+			confidence /= kept.size();
+			return true;
+		};
+
+		std::vector<std::pair<std::string, double>> candidates;
+		{
+			std::string text;
+			double confidence = 0.0;
+			if (read_frame(rep, text, confidence))
+				candidates.emplace_back(std::move(text), confidence);
+		}
+
+		// A single frame is unreliable exactly where it matters most: short
+		// utterances and low-confidence reads. The following frames come from
+		// the scan decoder's sequential pass, so voting costs a few decode
+		// milliseconds rather than another seek. Long, confident readings skip
+		// the extra calls entirely.
+		int samples = std::max(1, opts.consensus_samples);
+		bool suspect = candidates.empty()
+			|| OcrCharCount(NormalizeOcrText(candidates.front().first)) <= 4
+			|| candidates.front().second < 0.88;
+		if (samples > 1 && suspect) {
+			int last = std::min(tr.last_seen, opts.frame_count - 1);
+			for (int offset = 1; offset < samples; ++offset) {
+				int sample = rep + offset;
+				if (sample > last)
+					break;
+				std::string text;
+				double confidence = 0.0;
+				if (read_frame(sample, text, confidence))
+					candidates.emplace_back(std::move(text), confidence);
+			}
+		}
+
+		std::string best_text = VoteBestOcrText(candidates);
+		double best_confidence = 0.0;
+		if (!best_text.empty()) {
+			std::string best_key = NormalizeOcrText(best_text);
+			for (auto const& candidate : candidates) {
+				if (NormalizeOcrText(candidate.first) == best_key)
+					best_confidence = std::max(best_confidence, candidate.second);
+			}
+		}
 
 		// Search the exact run without an artificial cap: the template
 		// coverage signal only matches this row's own text, so a generous
 		// search cannot jump to an unrelated subtitle, and it recovers the
 		// true start even when OCR discovered the row late.
 		scan.max_frames = 0;
+		scan.tpl_source_width = downscale ? rv.w : 0;
+		scan.tpl_source_height = downscale ? rv.h : 0;
 		auto res = ScanBoundaries(tpl, rv.x, rv.y, rep, opts.frame_count, scan,
 		                          loader, cancel, ProgressFn(), std::vector<int>{});
 		if (!res.ok)
@@ -516,52 +878,15 @@ TimelineScanResult ScanVideoTimeline(TimelineScanOptions const& opts,
 		ev.rep_frame = rep;
 		ev.center_ok = tr.center_ok;
 		ev.row_video = rv;
-		ev.row_region = row_box;
+		ev.row_region = row_box_region;
 
-		ocr::OCRResult rec;
-		try {
-			rec = recognize(tpl);
-		}
-		catch (...) {
-			rec = ocr::OCRResult();
-		}
-		if (rec.ok) {
-			// A row is only useful once we can actually read text. PaddleOCR
-			// routinely emits a second, low-confidence "line" for a strip of
-			// background below the subtitle, and emits garbage on scene texture
-			// that merely looks text-like. Keep only confident, non-empty lines
-			// so real text survives while noise is dropped.
-			std::vector<ocr::OCRLine> kept;
-			for (auto const& line : rec.lines) {
-				if (!line.text.empty() && line.confidence >= 0.6) {
-					// PaddleOCR can return the same line twice (two overlapping
-					// det boxes); keep the first occurrence only so the text is
-					// not duplicated.
-					bool dup = false;
-					for (auto const& k : kept)
-						if (k.text == line.text) {
-							dup = true;
-							break;
-						}
-					if (!dup)
-						kept.push_back(line);
-				}
-			}
-			if (!kept.empty()) {
-				std::string text;
-				double conf = 0.0;
-				for (size_t k = 0; k < kept.size(); ++k) {
-					if (k) text += "\n";
-					text += kept[k].text;
-					conf += kept[k].confidence;
-				}
-				ev.text = text;
-				if (opts.replace_newlines)
-					for (auto& ch : ev.text)
-						if (ch == '\n') ch = ' ';
-				ev.confidence = conf / kept.size();
-				ev.ocr_verified = true;
-			}
+		if (!best_text.empty()) {
+			ev.text = best_text;
+			if (opts.replace_newlines)
+				for (auto& ch : ev.text)
+					if (ch == '\n') ch = ' ';
+			ev.confidence = best_confidence;
+			ev.ocr_verified = true;
 		}
 
 		// Drop rows with no readable text: these are the false positives on a
@@ -635,6 +960,14 @@ TimelineScanResult ScanVideoTimeline(TimelineScanOptions const& opts,
 		}
 		out.events = std::move(merged);
 	}
+
+	// The pixel scan can discover the same on-screen subtitle through two
+	// tracks (a signature drift mid-run splits one row in two) and only rows
+	// with exactly equal intervals were merged above. Fold the remaining
+	// near-identical rows together so the result lists each subtitle once.
+	if (opts.dedupe_events)
+		out.events = DedupeTimelineEvents(std::move(out.events), opts.min_text_chars,
+		                                  0.8, 2);
 
 	out.ok = true;
 	out.frames_evaluated = done;

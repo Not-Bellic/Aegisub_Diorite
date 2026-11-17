@@ -41,6 +41,20 @@ struct RegionImage {
 /// when the clamped rectangle is empty or the frame is malformed.
 RegionImage CropRegion(VideoFrame const& frame, int x, int y, int width, int height);
 
+/// Copy the given rectangle of a video frame into an RGB RegionImage and resample
+/// it to `out_width` x `out_height` with a box (area average) filter.
+///
+/// This is the reduced-resolution path of the whole-video scan: the source
+/// rectangle is read once, but only one averaged color conversion is performed
+/// per output pixel, and every later per-frame pass (change detection, signature,
+/// OCR) works on the smaller image. Box averaging keeps anti-aliased glyphs
+/// visible at 25-75% scale where nearest-neighbor sampling would drop thin
+/// strokes. The rectangle is clamped to the frame bounds. Returns an invalid
+/// RegionImage when the clamped rectangle is empty, the output size is not
+/// positive, or the frame is malformed.
+RegionImage CropRegionScaled(VideoFrame const& frame, int x, int y, int width, int height,
+                             int out_width, int out_height);
+
 /// Mean absolute difference per channel (0..255) between two equally sized
 /// RGB images. Returns 255 for mismatched sizes.
 double MeanAbsDiff(RegionImage const& a, RegionImage const& b);
@@ -86,6 +100,14 @@ struct ScanOptions {
 	int confirm_frames = 2;
 	/// If the detected run is shorter than this, the scan fails
 	int min_duration_frames = 0;
+	/// Size in video pixels of the rectangle that produced `tpl`. When positive
+	/// and different from the template's own size, every frame is cropped at
+	/// this size and resampled to the template's size, so a template built from
+	/// a downscaled region still compares correctly against full-resolution
+	/// frames. 0 means the template's own size (the original full-resolution
+	/// path).
+	int tpl_source_width = 0;
+	int tpl_source_height = 0;
 };
 
 struct ScanResult {
@@ -122,7 +144,9 @@ using ProgressFn = std::function<void(int, int)>;
 /// interior gaps. `keyframes` should be the provider's keyframe list so the
 /// pass start can be aligned to cheap seeks; when empty a fixed pre-roll is
 /// used. ScanOptions::max_frames optionally caps how far it may search. The
-/// template region origin is given by (tpl_x, tpl_y); its size comes from tpl.
+/// template region origin is given by (tpl_x, tpl_y); its size comes from tpl,
+/// unless ScanOptions::tpl_source_width/height describe a larger source
+/// rectangle that is resampled down to tpl's size on every frame.
 ScanResult ScanBoundaries(RegionImage const& tpl, int tpl_x, int tpl_y,
                           int base_frame, int frame_count,
                           ScanOptions const& opts,

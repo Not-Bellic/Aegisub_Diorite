@@ -672,6 +672,15 @@ ocr::OCROptions DialogOCR::Impl::CurrentOptions() const {
 	ocr::OCROptions options;
 	options.keep_line_breaks = keep_line_breaks->GetValue();
 	options.language = Languages()[language->GetSelection()].key;
+	// Video frames never carry upside-down text, so the angle classifier is
+	// pure overhead here.
+	options.use_angle_cls = false;
+	try {
+		options.det_limit_side_len = OPT_GET("Tool/OCR/Detect Limit Side Len")->GetInt();
+	}
+	catch (...) {
+		options.det_limit_side_len = 0;
+	}
 	return options;
 }
 

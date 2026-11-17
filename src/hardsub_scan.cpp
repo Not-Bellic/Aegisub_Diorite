@@ -134,6 +134,199 @@ RegionImage CropRegion(VideoFrame const& frame, int x, int y, int width, int hei
 	return out;
 }
 
+RegionImage CropRegionScaled(VideoFrame const& frame, int x, int y, int width, int height,
+                             int out_width, int out_height) {
+	RegionImage out;
+	if (out_width <= 0 || out_height <= 0)
+		return out;
+	if (frame.width == 0 || frame.height == 0 || frame.pitch < frame.width)
+		return out;
+	if (frame.pix_fmt == 0) {
+		if (frame.pitch < frame.width * 4
+		    || frame.data.size() < frame.pitch * frame.height)
+			return out;
+	}
+	else {
+		size_t chroma_rows = frame.height / 2;
+		size_t chroma_stride = frame.pix_fmt == 1 ? frame.pitch / 2 : frame.pitch;
+		if (frame.pitch < frame.width
+		    || frame.data.size() < frame.pitch * frame.height + chroma_stride * chroma_rows * (frame.pix_fmt == 1 ? 2 : 1))
+			return out;
+	}
+
+	int x0 = std::max(0, x);
+	int y0 = std::max(0, y);
+	int x1 = std::min<int>(static_cast<int>(frame.width), x + width);
+	int y1 = std::min<int>(static_cast<int>(frame.height), y + height);
+	if (x1 <= x0 || y1 <= y0)
+		return out;
+
+	const int src_w = x1 - x0;
+	const int src_h = y1 - y0;
+	if (out_width == src_w && out_height == src_h)
+		return CropRegion(frame, x, y, width, height);
+
+	out.width = out_width;
+	out.height = out_height;
+	out.rgb.assign(size_t(out_width) * out_height * 3, 0);
+
+	// Map an output index to the half-open source range it averages. Uses wide
+	// arithmetic so a very large source rectangle cannot overflow.
+	auto block_begin = [](int index, int out_n, int src_n) {
+		return static_cast<int>(static_cast<long long>(index) * src_n / out_n);
+	};
+	auto block_end = [](int index, int out_n, int src_n) {
+		return static_cast<int>(static_cast<long long>(index + 1) * src_n / out_n);
+	};
+
+	if (frame.pix_fmt == 0) {
+		for (int oy = 0; oy < out_height; ++oy) {
+			int sy0 = y0 + block_begin(oy, out_height, src_h);
+			int sy1 = y0 + block_end(oy, out_height, src_h);
+			if (sy1 <= sy0)
+				sy1 = sy0 + 1;
+			for (int ox = 0; ox < out_width; ++ox) {
+				int sx0 = x0 + block_begin(ox, out_width, src_w);
+				int sx1 = x0 + block_end(ox, out_width, src_w);
+				if (sx1 <= sx0)
+					sx1 = sx0 + 1;
+
+				unsigned long long r = 0, g = 0, b = 0;
+				unsigned long long count = 0;
+				for (int sy = sy0; sy < sy1; ++sy) {
+					int src_row = frame.flipped ? int(frame.height) - 1 - sy : sy;
+					const unsigned char *src = frame.data.data()
+						+ size_t(src_row) * frame.pitch + size_t(sx0) * 4;
+					for (int sx = sx0; sx < sx1; ++sx, src += 4) {
+						b += src[0];
+						g += src[1];
+						r += src[2];
+						++count;
+					}
+				}
+				size_t pos = (size_t(oy) * out_width + ox) * 3;
+				if (count > 0) {
+					out.rgb[pos] = static_cast<unsigned char>(r / count);
+					out.rgb[pos + 1] = static_cast<unsigned char>(g / count);
+					out.rgb[pos + 2] = static_cast<unsigned char>(b / count);
+				}
+			}
+		}
+		return out;
+	}
+
+	// YUV 4:2:0 (8-bit planar, NV12 or 10-bit P010): average luma over the
+	// source block and chroma over the chroma samples that block covers, then
+	// run a single BT.709 limited-range conversion per output pixel.
+	const bool is_planar = frame.pix_fmt == 1;
+	const bool is_10bit = frame.pix_fmt == 3;
+	const size_t y_plane = 0;
+	const size_t u_plane = frame.pitch * frame.height;
+	const size_t v_plane = u_plane + (frame.pitch / 2) * (frame.height / 2);
+	const size_t y_stride = frame.pitch;
+	const size_t uv_stride = is_planar ? frame.pitch / 2 : frame.pitch;
+
+	for (int oy = 0; oy < out_height; ++oy) {
+		int sy0 = y0 + block_begin(oy, out_height, src_h);
+		int sy1 = y0 + block_end(oy, out_height, src_h);
+		if (sy1 <= sy0)
+			sy1 = sy0 + 1;
+		// Chroma rows follow the same vertical flip as the luma rows.
+		int cy0, cy1;
+		if (frame.flipped) {
+			int fy0 = int(frame.height) - sy1;
+			int fy1 = int(frame.height) - sy0;
+			cy0 = fy0 / 2;
+			cy1 = (fy1 - 1) / 2 + 1;
+		}
+		else {
+			cy0 = sy0 / 2;
+			cy1 = (sy1 - 1) / 2 + 1;
+		}
+
+		for (int ox = 0; ox < out_width; ++ox) {
+			int sx0 = x0 + block_begin(ox, out_width, src_w);
+			int sx1 = x0 + block_end(ox, out_width, src_w);
+			if (sx1 <= sx0)
+				sx1 = sx0 + 1;
+			int cx0 = sx0 / 2;
+			int cx1 = (sx1 - 1) / 2 + 1;
+
+			// Average luma in the native bit depth, then expand to 8 bits.
+			unsigned long long y_sum = 0;
+			unsigned long long y_count = 0;
+			for (int sy = sy0; sy < sy1; ++sy) {
+				int src_row = frame.flipped ? int(frame.height) - 1 - sy : sy;
+				const unsigned char *y_row = frame.data.data() + y_plane
+					+ size_t(src_row) * y_stride;
+				for (int sx = sx0; sx < sx1; ++sx) {
+					if (is_10bit)
+						y_sum += (*reinterpret_cast<uint16_t const*>(y_row + size_t(sx) * 2)) >> 6;
+					else
+						y_sum += y_row[sx];
+					++y_count;
+				}
+			}
+			unsigned long long y_avg = y_count > 0 ? y_sum / y_count : 0;
+			int Y = is_10bit
+				? static_cast<int>(y_avg * 255 / 1023)
+				: static_cast<int>(y_avg);
+
+			unsigned long long u_sum = 0, v_sum = 0;
+			unsigned long long c_count = 0;
+			for (int cy = cy0; cy < cy1; ++cy) {
+				for (int cx = cx0; cx < cx1; ++cx) {
+					int U, V;
+					if (is_planar) {
+						size_t idx = size_t(cy) * uv_stride + cx;
+						if (is_10bit) {
+							U = static_cast<int>(((*reinterpret_cast<uint16_t const*>(
+								frame.data.data() + u_plane + idx * 2)) >> 6) * 255 / 1023);
+							V = static_cast<int>(((*reinterpret_cast<uint16_t const*>(
+								frame.data.data() + v_plane + idx * 2)) >> 6) * 255 / 1023);
+						}
+						else {
+							U = frame.data[u_plane + idx];
+							V = frame.data[v_plane + idx];
+						}
+					}
+					else {
+						size_t idx = u_plane + size_t(cy) * uv_stride
+							+ size_t(cx) * (is_10bit ? 4 : 2);
+						if (is_10bit) {
+							U = static_cast<int>(((*reinterpret_cast<uint16_t const*>(
+								frame.data.data() + idx)) >> 6) * 255 / 1023);
+							V = static_cast<int>(((*reinterpret_cast<uint16_t const*>(
+								frame.data.data() + idx + 2)) >> 6) * 255 / 1023);
+						}
+						else {
+							U = frame.data[idx];
+							V = frame.data[idx + 1];
+						}
+					}
+					u_sum += U;
+					v_sum += V;
+					++c_count;
+				}
+			}
+			int U = c_count > 0 ? static_cast<int>(u_sum / c_count) : 128;
+			int V = c_count > 0 ? static_cast<int>(v_sum / c_count) : 128;
+
+			double yf = (Y - 16) * 1.164;
+			double cb = U - 128.0;
+			double cr = V - 128.0;
+			int r = static_cast<int>(yf + 1.575 * cr + 0.5);
+			int g = static_cast<int>(yf - 0.187 * cb - 0.468 * cr + 0.5);
+			int b = static_cast<int>(yf + 1.793 * cb + 0.5);
+			size_t pos = (size_t(oy) * out_width + ox) * 3;
+			out.rgb[pos] = static_cast<unsigned char>(std::clamp(r, 0, 255));
+			out.rgb[pos + 1] = static_cast<unsigned char>(std::clamp(g, 0, 255));
+			out.rgb[pos + 2] = static_cast<unsigned char>(std::clamp(b, 0, 255));
+		}
+	}
+	return out;
+}
+
 double MeanAbsDiff(RegionImage const& a, RegionImage const& b) {
 	if (!a.Valid() || !b.Valid() || a.width != b.width || a.height != b.height)
 		return 255.0;
@@ -407,6 +600,15 @@ ScanResult ScanBoundaries(RegionImage const& tpl, int tpl_x, int tpl_y,
 		return out;
 	}
 
+	// The template may be a downscaled crop (whole-video scan). In that case
+	// crop the larger source rectangle from each frame and resample it to the
+	// template's size so every coverage comparison is 1:1 with the template.
+	const int source_width = opts.tpl_source_width > 0 ? opts.tpl_source_width : tpl.width;
+	const int source_height = opts.tpl_source_height > 0 ? opts.tpl_source_height : tpl.height;
+	if (source_width <= 0 || source_height <= 0)
+		return out;
+	const bool resample_source = source_width != tpl.width || source_height != tpl.height;
+
 	double enter = std::clamp(opts.threshold, 0.0, 1.0);
 	double exit = opts.threshold_exit > 0.0
 		? std::clamp(opts.threshold_exit, 0.0, enter)
@@ -427,7 +629,10 @@ ScanResult ScanBoundaries(RegionImage const& tpl, int tpl_x, int tpl_y,
 		auto frame = loader(f);
 		if (!frame)
 			return -1.0;
-		auto crop = CropRegion(*frame, tpl_x, tpl_y, tpl.width, tpl.height);
+		auto crop = resample_source
+			? CropRegionScaled(*frame, tpl_x, tpl_y, source_width, source_height,
+			                   tpl.width, tpl.height)
+			: CropRegion(*frame, tpl_x, tpl_y, source_width, source_height);
 		if (!crop.Valid())
 			return -1.0;
 		double coverage = TemplateTextCoverage(tpl, crop, text_pixels);

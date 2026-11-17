@@ -32,6 +32,10 @@ struct OCRProcessConfig {
 	bool det = true;
 	bool rec = true;
 	bool cls = true;
+	/// Longest side of the detector input, in pixels. 0 keeps the runtime
+	/// default. This is a startup argument of the engine, not a per-request
+	/// switch, so it has to be fixed when the process is launched.
+	int det_limit_side_len = 0;
 };
 
 /// A persistent PaddleOCR-json child process in anonymous pipe mode.

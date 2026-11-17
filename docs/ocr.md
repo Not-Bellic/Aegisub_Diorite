@@ -79,6 +79,30 @@ detects the frame-exact start/end of the burned-in subtitle:
    performs a slower full-recognition sweep that compares each sampled frame's
    text against the reference.
 
+### How the scan turns OCR results into rows
+
+- Recognition runs on a tight, full-resolution crop of the detected line. The
+  padded template is only used for the coverage scan, because the recognizer
+  normalizes its input to 48 px height and the surrounding background is what
+  short readings hallucinate on.
+- A row whose first reading is short (4 characters or fewer) or low-confidence
+  is read again on the following frames and the consensus reading wins. Those
+  frames come from the scan decoder's sequential pass, so voting costs a few
+  decode milliseconds instead of another seek.
+- A reading must clear a length-aware confidence floor: 1 character needs 0.90,
+  2-3 characters 0.75, 4-7 characters 0.62, 8 or more 0.55. CTC scores over
+  very few time steps are inflated, so a short misread otherwise scores above
+  0.9.
+- Rows that describe the same subtitle (overlapping interval, same visual line,
+  similar text) are folded together, and rows with no readable text are
+  dropped.
+
+`Tool/OCR/Detect Limit Side Len` in the config file caps the detector input
+(0 keeps the engine default of 960). Raising it to 1280 or 1600 helps small or
+faint text in a wide 4K region at a proportional detection cost; lowering it
+speeds the scan up when subtitles are large. The 0/180 degree angle classifier
+is skipped everywhere now, since burned-in subtitles are horizontal.
+
 The OCR engine for boundary checks is started asynchronously when the scan
 begins, so model loading overlaps the pixel scan instead of adding to the scan
 time, and it is torn down when the scan finishes (no OCR process is kept alive

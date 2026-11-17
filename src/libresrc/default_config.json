@@ -560,7 +560,8 @@
 			"Region X" : -1,
 			"Region Y" : -1,
 			"Region W" : -1,
-			"Region H" : -1
+			"Region H" : -1,
+			"Scan Scale" : 100
 		},
 		"Localization" : {
 			"Files" : "",
@@ -591,6 +592,7 @@
 		},
 		"OCR" : {
 			"Copy After OCR" : false,
+			"Detect Limit Side Len" : 0,
 			"Insert After OCR" : false,
 			"Keep Line Breaks" : true,
 			"Language" : "japanese",

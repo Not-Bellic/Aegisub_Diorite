@@ -22,6 +22,7 @@
 #include "compat.h"
 #include "format.h"
 #include "hardsub_region_tool.h"
+#include "hardsub_timeline_scan.h"
 #include "include/aegisub/context.h"
 #include "libresrc/libresrc.h"
 #include "localization/localization_matcher.h"
@@ -97,6 +98,12 @@ std::string LanguageOption() {
 	if (language.empty())
 		language = "japanese";
 	return language;
+}
+
+/// Detector input cap from the user config (0 keeps the engine default).
+int DetectLimitOption() {
+	try { return OPT_GET("Tool/OCR/Detect Limit Side Len")->GetInt(); }
+	catch (...) { return 0; }
 }
 
 /// Number of non-whitespace bytes in normalized OCR text. Byte length is a
@@ -182,67 +189,10 @@ bool TextMatch(double sim, std::string const& reference) {
 }
 
 /// Pick the consensus OCR text from several frames of the same subtitle.
-/// A longest-string contest rewards hallucinated readings (uncertain short
-/// texts tend to gain spurious characters), so group the normalized readings
-/// by similarity and choose the largest, most confident cluster instead.
-/// Within a cluster the longest reading is kept because it carries the full
-/// phrase, and all members agreed on it.
+/// The implementation lives in the hardsub scan module so the whole-video scan
+/// votes exactly the same way this dialog does.
 std::string VoteBestText(std::vector<std::pair<std::string, double>> const& candidates) {
-	size_t n = candidates.size();
-	if (n == 0)
-		return {};
-	if (n == 1)
-		return candidates[0].first;
-
-	// Union-find over normalized similarity.
-	std::vector<size_t> parent(n);
-	std::iota(parent.begin(), parent.end(), size_t(0));
-	auto find = [&](size_t x) {
-		while (parent[x] != x) {
-			parent[x] = parent[parent[x]];
-			x = parent[x];
-		}
-		return x;
-	};
-	auto unite = [&](size_t a, size_t b) { parent[find(a)] = find(b); };
-
-	std::vector<std::string> normalized(n);
-	for (size_t i = 0; i < n; ++i)
-		normalized[i] = localization::Normalize(candidates[i].first, StrictMatchOptions());
-	for (size_t i = 0; i < n; ++i) {
-		if (normalized[i].empty())
-			continue;
-		for (size_t j = i + 1; j < n; ++j) {
-			if (!normalized[j].empty()
-			    && localization::Similarity(normalized[i], normalized[j]) >= 0.6)
-				unite(i, j);
-		}
-	}
-
-	std::map<size_t, std::vector<size_t>> clusters;
-	for (size_t i = 0; i < n; ++i)
-		clusters[find(i)].push_back(i);
-
-	double best_score = -1.0;
-	std::string best_text;
-	for (auto const& entry : clusters) {
-		double confidence = 0.0;
-		for (size_t idx : entry.second)
-			confidence += candidates[idx].second;
-		// Member count dominates; total confidence breaks ties, and a longer
-		// consensus text wins as the final tie-breaker.
-		double score = entry.second.size() * 1000.0 + confidence;
-		std::string cluster_text;
-		for (size_t idx : entry.second) {
-			if (candidates[idx].first.size() > cluster_text.size())
-				cluster_text = candidates[idx].first;
-		}
-		if (score > best_score || (score == best_score && cluster_text.size() > best_text.size())) {
-			best_score = score;
-			best_text = std::move(cluster_text);
-		}
-	}
-	return best_text;
+	return hardsub::VoteBestOcrText(candidates);
 }
 
 /// Save the selected region of `frame` as a PNG and return its path. `margin`
@@ -571,8 +521,14 @@ DialogHardSubScan::DialogHardSubScan(agi::Context *context)
 	CreateControls();
 	UpdateControls();
 	ocr_warm_state_ = std::make_shared<OcrWarmState>();
+	ocr_warm_state_->config.det_limit_side_len = DetectLimitOption();
 	ocr_full_state_ = std::make_shared<OcrWarmState>();
-	ocr_full_state_->config = ocr::OCRProcessConfig{true, true, true};
+	// Burned-in subtitles are horizontal, so the angle classifier only costs
+	// time; the detector input cap is the knob for small or faint text.
+	ocr_full_state_->config.det = true;
+	ocr_full_state_->config.rec = true;
+	ocr_full_state_->config.cls = false;
+	ocr_full_state_->config.det_limit_side_len = DetectLimitOption();
 	StartOcrWarmup();
 
 	persist = agi::make_unique<PersistLocation>(this, "Tool/HardSub");
@@ -865,6 +821,8 @@ void DialogHardSubScan::StartRecognize(int frame) {
 	ocr::OCROptions options;
 	options.keep_line_breaks = true;
 	options.language = LanguageOption();
+	options.use_angle_cls = false;
+	options.det_limit_side_len = DetectLimitOption();
 
 	int frame_count = c->project->VideoProvider()->GetFrameCount();
 	std::vector<int> frames;
@@ -1138,6 +1096,8 @@ void DialogHardSubScan::OnScan(wxCommandEvent&) {
 	ocr::OCROptions ocr_options;
 	ocr_options.keep_line_breaks = true;
 	ocr_options.language = LanguageOption();
+	ocr_options.use_angle_cls = false;
+	ocr_options.det_limit_side_len = DetectLimitOption();
 	if (confirm_with_ocr && !engine.GetDetectionDiagnostic(ocr_options).empty())
 		confirm_with_ocr = false;
 	if (strict_ocr && !engine.GetDiagnostic(ocr_options).empty())

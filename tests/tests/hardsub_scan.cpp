@@ -140,6 +140,84 @@ TEST(hardsub_scan, crop_region_nv12) {
 	EXPECT_NEAR(left.rgb[2], 255, 2);
 }
 
+TEST(hardsub_scan, crop_region_scaled_averages_bgra_blocks) {
+	VideoFrame frame = MakeFrame(4, 2, 0, 0, 0);
+	for (int y = 0; y < 2; ++y) {
+		for (int x = 0; x < 2; ++x) {
+			size_t off = size_t(y) * frame.pitch + size_t(x) * 4;
+			frame.data[off] = 60;      // B
+			frame.data[off + 1] = 40;  // G
+			frame.data[off + 2] = 200; // R
+		}
+		for (int x = 2; x < 4; ++x) {
+			size_t off = size_t(y) * frame.pitch + size_t(x) * 4;
+			frame.data[off] = 160;     // B
+			frame.data[off + 1] = 80;  // G
+			frame.data[off + 2] = 20;  // R
+		}
+	}
+
+	auto crop = CropRegionScaled(frame, 0, 0, 4, 2, 2, 1);
+	ASSERT_TRUE(crop.Valid());
+	EXPECT_EQ(crop.width, 2);
+	EXPECT_EQ(crop.height, 1);
+	// Each output pixel is the average of a 2x2 source block, so the two
+	// uniform halves keep their exact colors.
+	EXPECT_EQ(crop.rgb[0], 200);
+	EXPECT_EQ(crop.rgb[1], 40);
+	EXPECT_EQ(crop.rgb[2], 60);
+	EXPECT_EQ(crop.rgb[3], 20);
+	EXPECT_EQ(crop.rgb[4], 80);
+	EXPECT_EQ(crop.rgb[5], 160);
+
+	// A same-size request must be identical to the unscaled crop.
+	auto same = CropRegionScaled(frame, 0, 0, 4, 2, 4, 2);
+	ASSERT_TRUE(same.Valid());
+	EXPECT_EQ(same.rgb, CropRegion(frame, 0, 0, 4, 2).rgb);
+}
+
+TEST(hardsub_scan, crop_region_scaled_yuv420p) {
+	auto frame = MakeYuvFrame(4, 2,
+		[](int x, int) { return x < 2 ? 235 : 16; },
+		[](int, int) { return 0; },
+		[](int, int) { return 0; });
+
+	auto crop = CropRegionScaled(frame, 0, 0, 4, 2, 2, 1);
+	ASSERT_TRUE(crop.Valid());
+	EXPECT_EQ(crop.width, 2);
+	EXPECT_EQ(crop.height, 1);
+	// White left half, black right half after averaging each 2x2 block.
+	EXPECT_NEAR(crop.rgb[0], 255, 2);
+	EXPECT_NEAR(crop.rgb[1], 255, 2);
+	EXPECT_NEAR(crop.rgb[2], 255, 2);
+	EXPECT_NEAR(crop.rgb[3], 0, 2);
+	EXPECT_NEAR(crop.rgb[4], 0, 2);
+	EXPECT_NEAR(crop.rgb[5], 0, 2);
+}
+
+TEST(hardsub_scan, crop_region_scaled_nv12) {
+	auto frame = MakeYuvFrame(4, 2,
+		[](int x, int) { return x < 2 ? 235 : 16; },
+		[](int, int) { return 0; },
+		[](int, int) { return 0; });
+	// Convert the planar buffer to NV12 layout (interleaved UV).
+	frame.pix_fmt = 2;
+	size_t y_bytes = size_t(frame.width) * frame.height;
+	size_t chroma = size_t(frame.width / 2) * (frame.height / 2);
+	std::vector<unsigned char> nv12(y_bytes + chroma * 2);
+	std::copy(frame.data.begin(), frame.data.begin() + y_bytes, nv12.begin());
+	for (size_t i = 0; i < chroma; ++i) {
+		nv12[y_bytes + i * 2] = frame.data[y_bytes + i];
+		nv12[y_bytes + i * 2 + 1] = frame.data[y_bytes + chroma + i];
+	}
+	frame.data = std::move(nv12);
+
+	auto crop = CropRegionScaled(frame, 0, 0, 4, 2, 2, 1);
+	ASSERT_TRUE(crop.Valid());
+	EXPECT_NEAR(crop.rgb[0], 255, 2);
+	EXPECT_NEAR(crop.rgb[3], 0, 2);
+}
+
 TEST(hardsub_scan, mean_abs_diff) {
 	auto a = MakeFrame(2, 1, 0, 0, 0);
 	auto b = MakeFrame(2, 1, 0, 0, 0);

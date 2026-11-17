@@ -548,7 +548,8 @@
 			"Region X" : -1,
 			"Region Y" : -1,
 			"Region W" : -1,
-			"Region H" : -1
+			"Region H" : -1,
+			"Scan Scale" : 100
 		},
 		"Kanji Timer" : {
 			"Interpolation" : true

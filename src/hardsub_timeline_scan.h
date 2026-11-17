@@ -25,6 +25,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace hardsub {
@@ -55,6 +56,13 @@ struct TimelineScanOptions {
 	/// Debounce frames used both for OCR settle detection and the boundary scan.
 	int confirm_frames = 2;
 
+	/// Resolution factor applied to the scan region before any processing
+	/// (1.0 = full resolution). Values below 1 crop the region at a smaller size
+	/// with box averaging, which makes the per-frame pixel passes (crop, change
+	/// detection, signature) and the OCR input cheaper at the cost of missing
+	/// small or low-contrast text. The UI offers 0.75, 0.5, 0.33 and 0.25.
+	double scan_scale = 1.0;
+
 	/// Minimum number of frames between two OCR detection samples while the
 	/// region is stable. Lower values are more responsive but slower.
 	int detect_every = 16;
@@ -73,6 +81,18 @@ struct TimelineScanOptions {
 	/// Template-coverage thresholds forwarded to ScanBoundaries.
 	double threshold = 0.40;
 	double threshold_exit = 0.20;
+
+	/// Frames sampled to vote on the text of a row whose first reading is short
+	/// or uncertain (1 = the representative frame only). The extra samples are
+	/// the frames right after the representative one, which the scan decoder
+	/// serves without seeking.
+	int consensus_samples = 3;
+	/// Rows whose normalized text is shorter than this many characters are
+	/// dropped (0 keeps every non-empty row).
+	int min_text_chars = 1;
+	/// Merge rows that describe the same on-screen subtitle: overlapping
+	/// interval, same visual line, similar text.
+	bool dedupe_events = true;
 };
 
 /// A bounding rectangle in region-relative pixel coordinates.
@@ -142,6 +162,41 @@ TimelineScanResult ScanVideoTimeline(TimelineScanOptions const& opts,
 
 /// Convert an OCR line's polygon box into a bounding rectangle.
 TimelineRect LineBoundingRect(ocr::OCRLine const& line);
+
+/// Normalized form of an OCR reading, used to compare two readings of the same
+/// text: tags and line break escapes stripped, punctuation removed, case
+/// folded, whitespace collapsed.
+std::string NormalizeOcrText(std::string const& text);
+
+/// Number of Unicode characters (code points) in a UTF-8 string.
+int OcrCharCount(std::string const& text);
+
+/// Similarity (0..1) between two strings that are already normalized with
+/// NormalizeOcrText.
+double OcrTextSimilarity(std::string const& a, std::string const& b);
+
+/// Minimum mean confidence a reading needs to be kept, by character count.
+/// CTC scores are averaged over very few time steps for short strings, so a
+/// two-character misread routinely scores above 0.9; the bar has to rise as
+/// the text gets shorter.
+double MinimumOcrConfidence(int text_chars);
+
+/// Pick the consensus reading from several frames of the same subtitle: the
+/// largest cluster of similar readings wins (a longest-string contest would
+/// reward hallucinated extra characters), then total confidence, then length.
+std::string VoteBestOcrText(std::vector<std::pair<std::string, double>> const& candidates);
+
+/// Merge rows that describe the same on-screen subtitle: their intervals must
+/// overlap by at least 80% of the shorter row, their boxes must sit on the same
+/// visual line, and their normalized text must be the same or at least
+/// `text_similarity` similar. Identical text separated by at most
+/// `max_gap_frames` frames is stitched back together (a track that split for a
+/// moment). Rows whose normalized text is shorter than `min_text_chars` are
+/// dropped. The result is ordered by start frame.
+std::vector<TimelineRowEvent> DedupeTimelineEvents(std::vector<TimelineRowEvent> events,
+                                                   int min_text_chars,
+                                                   double text_similarity,
+                                                   int max_gap_frames);
 
 /// Group OCR lines into visual rows. Lines whose vertical boxes substantially
 /// overlap are treated as fragments of the same row (the scan region is assumed

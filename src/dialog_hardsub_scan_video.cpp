@@ -61,6 +61,7 @@
 
 #include <wx/button.h>
 #include <wx/checkbox.h>
+#include <wx/choice.h>
 #include <wx/clipbrd.h>
 #include <wx/file.h>
 #include <wx/filedlg.h>
@@ -86,6 +87,11 @@ struct OcrWarmState {
 };
 
 namespace {
+
+/// Resolution levels the whole-video scan can run at, as percentages of the
+/// selected region. 100 keeps the original full-resolution behaviour.
+int const kScanScalePercents[] = { 100, 75, 50, 33, 25 };
+int const kScanScaleCount = sizeof(kScanScalePercents) / sizeof(kScanScalePercents[0]);
 
 wxDEFINE_EVENT(EVT_HARDSUB_SCANV_PROGRESS, ValueEvent<HardSubScanVideoProgress>);
 wxDEFINE_EVENT(EVT_HARDSUB_SCANV_DONE, ValueEvent<HardSubScanVideoOutcome>);
@@ -244,7 +250,13 @@ DialogHardSubScanVideo::DialogHardSubScanVideo(agi::Context *context)
 
 	CreateControls();
 	ocr_full_state_ = std::make_shared<OcrWarmState>();
-	ocr_full_state_->config = ocr::OCRProcessConfig{true, true, true};
+	// Burned-in subtitles are horizontal, so the 0/180 degree classifier only
+	// costs time. The detector input cap is the knob for small or faint text.
+	ocr_full_state_->config.det = true;
+	ocr_full_state_->config.rec = true;
+	ocr_full_state_->config.cls = false;
+	ocr_full_state_->config.det_limit_side_len =
+		ReadIntOption("Tool/OCR/Detect Limit Side Len", 0);
 	StartOcrWarmup();
 
 	// Default region: the bottom fifth of the video where dialogue subtitles
@@ -416,6 +428,17 @@ void DialogHardSubScanVideo::CreateControls() {
 		detect_every_spin->SetToolTip(_("Minimum gap between OCR samples while the region is stable. Smaller values are more accurate but slower."));
 		grid->Add(detect_every_spin, 1, wxEXPAND);
 
+		grid->Add(new wxStaticText(this, -1, _("Scan resolution")), 0, wxALIGN_CENTER_VERTICAL);
+		scan_scale_choice = new wxChoice(this, -1);
+		for (int i = 0; i < kScanScaleCount; ++i) {
+			if (kScanScalePercents[i] >= 100)
+				scan_scale_choice->Append(_("100% (original)"));
+			else
+				scan_scale_choice->Append(wxString::Format("%d%%", kScanScalePercents[i]));
+		}
+		scan_scale_choice->SetToolTip(_("Scan a downscaled copy of the region. Lower resolutions are faster but may miss small or faint subtitles."));
+		grid->Add(scan_scale_choice, 1, wxEXPAND);
+
 		opt_box->Add(grid, 0, wxEXPAND | wxALL, 4);
 		merge_check = new wxCheckBox(this, -1, _("Merge rows with identical start/end into one line"));
 		merge_check->SetValue(true);
@@ -474,6 +497,12 @@ void DialogHardSubScanVideo::CreateControls() {
 	center_band_spin->SetValue(ReadIntOption("Tool/HardSubScanVideo/Center Band", 10));
 	min_duration_spin->SetValue(ReadIntOption("Tool/HardSubScanVideo/Min Duration Frames", 12));
 	detect_every_spin->SetValue(ReadIntOption("Tool/HardSubScanVideo/Detect Every", 16));
+	int saved_scan_scale = ReadIntOption("Tool/HardSubScanVideo/Scan Scale", 100);
+	int scan_scale_selection = 0;
+	for (int i = 0; i < kScanScaleCount; ++i)
+		if (kScanScalePercents[i] == saved_scan_scale)
+			scan_scale_selection = i;
+	scan_scale_choice->SetSelection(scan_scale_selection);
 	merge_check->SetValue(ReadBoolOption("Tool/HardSubScanVideo/Merge Same Interval", true));
 	replace_newlines_check->SetValue(ReadBoolOption("Tool/HardSubScanVideo/Replace Newlines", true));
 
@@ -556,6 +585,13 @@ std::vector<size_t> DialogHardSubScanVideo::ResultIndices() const {
 			indices.push_back(i);
 	}
 	return indices;
+}
+
+int DialogHardSubScanVideo::SelectedScanScale() const {
+	int selection = scan_scale_choice ? scan_scale_choice->GetSelection() : 0;
+	if (selection < 0 || selection >= kScanScaleCount)
+		selection = 0;
+	return kScanScalePercents[selection];
 }
 
 void DialogHardSubScanVideo::ActivateRegionTool() {
@@ -642,6 +678,8 @@ void DialogHardSubScanVideo::OnScan(wxCommandEvent&) {
 	SaveIntOption("Tool/HardSubScanVideo/Center Band", center_band_spin->GetValue());
 	SaveIntOption("Tool/HardSubScanVideo/Min Duration Frames", min_duration_spin->GetValue());
 	SaveIntOption("Tool/HardSubScanVideo/Detect Every", detect_every_spin->GetValue());
+	int scan_scale_percent = SelectedScanScale();
+	SaveIntOption("Tool/HardSubScanVideo/Scan Scale", scan_scale_percent);
 	SaveBoolOption("Tool/HardSubScanVideo/Merge Same Interval", merge_check->GetValue());
 	SaveBoolOption("Tool/HardSubScanVideo/Replace Newlines", replace_newlines_check->GetValue());
 
@@ -658,6 +696,7 @@ void DialogHardSubScanVideo::OnScan(wxCommandEvent&) {
 	options.center_band = center_band_spin->GetValue();
 	options.min_duration_frames = min_duration_spin->GetValue();
 	options.detect_every = detect_every_spin->GetValue();
+	options.scan_scale = scan_scale_percent / 100.0;
 	options.merge_same_interval = merge_check->GetValue();
 	options.replace_newlines = replace_newlines_check->GetValue();
 
@@ -695,6 +734,9 @@ void DialogHardSubScanVideo::OnScan(wxCommandEvent&) {
 		ocr::OCROptions ocr_options;
 		ocr_options.keep_line_breaks = true;
 		ocr_options.language = LanguageOption();
+		ocr_options.use_angle_cls = false;
+		ocr_options.det_limit_side_len =
+			ReadIntOption("Tool/OCR/Detect Limit Side Len", 0);
 		std::shared_ptr<ocr::OCRProcess> rec_proc;
 		std::function<ocr::OCRResult(hardsub::RegionImage const&)> detect;
 		std::function<ocr::OCRResult(hardsub::RegionImage const&)> recognize;
@@ -736,7 +778,11 @@ void DialogHardSubScanVideo::OnScan(wxCommandEvent&) {
 			int code = GuardSEH([&] {
 				wxString temp;
 				TempPngGuard guard(temp);
-				wxImage img = FitToMax(BuildImage(crop, 2), 1600);
+				// Only upscale genuinely small crops. The detector downscales
+				// anything wider than its input cap, so upscaling an ordinary
+				// line buys no extra glyph detail and roughly triples the cost.
+				int scale = crop.height > 0 && crop.height < 64 ? 2 : 1;
+				wxImage img = FitToMax(BuildImage(crop, scale), 1600);
 				if (!img.IsOk())
 					return;
 				temp = wxFileName::CreateTempFileName("aegisub-hardsub-");

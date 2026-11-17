@@ -8231,6 +8231,18 @@ msgid "Minimum gap between OCR samples while the region is stable. Smaller value
 msgstr "区域稳定时两次 OCR 采样的最小间隔。数值越小越精确，但速度越慢。"
 
 #: ../src/dialog_hardsub_scan_video.cpp
+msgid "Scan resolution"
+msgstr "扫描分辨率"
+
+#: ../src/dialog_hardsub_scan_video.cpp
+msgid "100% (original)"
+msgstr "100%（原始）"
+
+#: ../src/dialog_hardsub_scan_video.cpp
+msgid "Scan a downscaled copy of the region. Lower resolutions are faster but may miss small or faint subtitles."
+msgstr "扫描前先缩小区域图像。分辨率越低速度越快，但可能漏掉较小或对比度较低的字幕。"
+
+#: ../src/dialog_hardsub_scan_video.cpp
 msgid "Merge rows with identical start/end into one line"
 msgstr "合并起止完全相同的多行到同一行"
 

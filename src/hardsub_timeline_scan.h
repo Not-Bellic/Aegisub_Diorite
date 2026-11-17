@@ -125,6 +125,13 @@ struct TimelineScanOptions {
 	double threshold = 0.40;
 	double threshold_exit = 0.20;
 
+	/// The provider's keyframe list, when the caller has one. The per-row
+	/// boundary scan starts from the keyframe before its row and probes earlier
+	/// keyframes while the row still looks present; without the list it falls
+	/// back to a fixed 120-frame pre-roll, which costs a full re-decode per
+	/// probe on a long row.
+	std::vector<int> keyframes;
+
 	/// Frames sampled to vote on the text of a row whose first reading is short
 	/// or uncertain (1 = the representative frame only). The extra samples are
 	/// the frames right after the representative one, which the scan decoder

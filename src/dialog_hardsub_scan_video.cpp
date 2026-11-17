@@ -626,6 +626,8 @@ void DialogHardSubScanVideo::OnScan(wxCommandEvent&) {
 		auto decoder = std::make_shared<hardsub::ScanVideoDecoder>(video_filename, decoder_error,
 			hardsub::ScanDecoderSettingsForScan());
 		bool use_decoder = !video_filename.empty() && decoder->Valid();
+		if (use_decoder)
+			options.keyframes = decoder->GetKeyFrames();
 		auto loader = use_decoder
 			? hardsub::FrameLoader([decoder](int f) { return decoder->GetFrame(f); })
 			: hardsub::FrameLoader([handler](int f) {

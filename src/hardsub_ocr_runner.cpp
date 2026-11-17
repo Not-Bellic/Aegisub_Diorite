@@ -87,17 +87,55 @@ int GuardSEH(std::function<void()> const &fn) {
 	}
 }
 
-// Runs one image through the warmed backend. The backend reports its own
-// diagnostic when the runtime is unusable, so a false return only means "no
-// result for this image".
-bool RunBackend(std::shared_ptr<ocr::OcrBackend> const &backend,
-                agi::fs::path const &image_path, ocr::OCROptions const &options,
-                ocr::OcrMode mode, std::function<bool()> const &cancel,
-                ocr::OCRResult &out) {
+/// Runs one crop through the backend.
+///
+/// An in-memory engine gets the pixels directly. The file-based ones (the
+/// Paddle runtime) still need a path, so they keep the temporary-PNG route with
+/// the same bounding the UI always had. The bounding happens only on that
+/// route: an in-memory engine scales the image itself.
+ocr::OCRResult RunCrop(std::shared_ptr<ocr::OcrBackend> const &backend,
+                       RegionImage const &crop, ocr::OCROptions const &options,
+                       ocr::OcrMode mode, std::function<bool()> const &cancel,
+                       long long *image_ms) {
+	ocr::OCRResult out;
 	if (!backend)
-		return false;
-	out = backend->Run(image_path, options, mode, cancel);
-	return out.ok;
+		return out;
+
+	if (backend->AcceptsImagesInMemory()) {
+		ocr::OCRImage image;
+		image.width = crop.width;
+		image.height = crop.height;
+		image.rgb = crop.rgb.data();
+		out = backend->RunImage(image, options, mode, cancel);
+		return out;
+	}
+
+	wxString temp;
+	TempPngGuard guard(temp);
+	auto const encode_begin = Clock::now();
+	wxImage img = FitToMax(BuildImage(crop, 1), 1600);
+	if (!img.IsOk())
+		return out;
+	temp = wxFileName::CreateTempFileName("aegisub-hardsub-");
+	if (temp.empty() || !img.SaveFile(temp, wxBITMAP_TYPE_PNG))
+		return out;
+	if (image_ms)
+		*image_ms += ElapsedMs(encode_begin);
+
+	ocr::OCRResult tmp = backend->Run(agi::fs::path(std::wstring(temp.wc_str())),
+	                                  options, mode, cancel);
+	if (!tmp.ok || mode != ocr::OcrMode::DetectOnly)
+		return tmp;
+
+	// Detection boxes come back in the bounded image's coordinates.
+	double sx = static_cast<double>(crop.width) / img.GetWidth();
+	double sy = static_cast<double>(crop.height) / img.GetHeight();
+	for (auto &line : tmp.lines)
+		for (auto &pt : line.box) {
+			pt.first = static_cast<int>(pt.first * sx);
+			pt.second = static_cast<int>(pt.second * sy);
+		}
+	return tmp;
 }
 
 } // namespace
@@ -108,36 +146,16 @@ RegionDetector MakeOcrDetector(std::shared_ptr<ocr::OcrBackend> backend,
                                ScanProfile *profile) {
 	return [backend, options, cancel, profile](RegionImage const &crop) -> ocr::OCRResult {
 		ocr::OCRResult out;
+		if (profile)
+			++profile->ocr_detect_calls;
 		int code = GuardSEH([&] {
-			if (profile)
-				++profile->ocr_detect_calls;
-			wxString temp;
-			TempPngGuard guard(temp);
-			auto const encode_begin = Clock::now();
-			wxImage img = FitToMax(BuildImage(crop, 1), 1600);
-			if (!img.IsOk())
-				return;
-			temp = wxFileName::CreateTempFileName("aegisub-hardsub-");
-			if (temp.empty() || !img.SaveFile(temp, wxBITMAP_TYPE_PNG))
-				return;
-			if (profile)
-				profile->ms_ocr_image += ElapsedMs(encode_begin);
-			ocr::OCRResult tmp;
-			auto const ocr_begin = Clock::now();
-			bool const ok = RunBackend(backend, agi::fs::path(std::wstring(temp.wc_str())),
-			                           options, ocr::OcrMode::DetectOnly, cancel, tmp);
-			if (profile)
-				profile->ms_detect += ElapsedMs(ocr_begin);
-			if (!ok)
-				return;
-			double sx = static_cast<double>(crop.width) / img.GetWidth();
-			double sy = static_cast<double>(crop.height) / img.GetHeight();
-			for (auto &line : tmp.lines)
-				for (auto &pt : line.box) {
-					pt.first = static_cast<int>(pt.first * sx);
-					pt.second = static_cast<int>(pt.second * sy);
-				}
-			out = std::move(tmp);
+			auto const begin = Clock::now();
+			long long image_ms = 0;
+			out = RunCrop(backend, crop, options, ocr::OcrMode::DetectOnly, cancel, &image_ms);
+			if (profile) {
+				profile->ms_ocr_image += image_ms;
+				profile->ms_detect += ElapsedMs(begin) - image_ms;
+			}
 		});
 		if (code)
 			return ocr::OCRResult();
@@ -151,33 +169,16 @@ RegionRecognizer MakeOcrRecognizer(std::shared_ptr<ocr::OcrBackend> backend,
                                    ScanProfile *profile) {
 	return [backend, options, cancel, profile](RegionImage const &crop) -> ocr::OCRResult {
 		ocr::OCRResult out;
+		if (profile)
+			++profile->ocr_recognize_calls;
 		int code = GuardSEH([&] {
-			if (profile)
-				++profile->ocr_recognize_calls;
-			wxString temp;
-			TempPngGuard guard(temp);
-			auto const encode_begin = Clock::now();
-			// Only upscale genuinely small crops. The detector downscales
-			// anything wider than its input cap, so upscaling an ordinary line
-			// buys no extra glyph detail and roughly triples the cost.
-			int scale = crop.height > 0 && crop.height < 64 ? 2 : 1;
-			wxImage img = FitToMax(BuildImage(crop, scale), 1600);
-			if (!img.IsOk())
-				return;
-			temp = wxFileName::CreateTempFileName("aegisub-hardsub-");
-			if (temp.empty() || !img.SaveFile(temp, wxBITMAP_TYPE_PNG))
-				return;
-			if (profile)
-				profile->ms_ocr_image += ElapsedMs(encode_begin);
-			ocr::OCRResult tmp;
-			auto const ocr_begin = Clock::now();
-			bool const ok = RunBackend(backend, agi::fs::path(std::wstring(temp.wc_str())),
-			                           options, ocr::OcrMode::Full, cancel, tmp);
-			if (profile)
-				profile->ms_recognize += ElapsedMs(ocr_begin);
-			if (!ok)
-				return;
-			out = std::move(tmp);
+			auto const begin = Clock::now();
+			long long image_ms = 0;
+			out = RunCrop(backend, crop, options, ocr::OcrMode::RecOnly, cancel, &image_ms);
+			if (profile) {
+				profile->ms_ocr_image += image_ms;
+				profile->ms_recognize += ElapsedMs(begin) - image_ms;
+			}
 		});
 		if (code)
 			return ocr::OCRResult();

@@ -342,6 +342,7 @@ bool BenchRequested(std::vector<std::string> const &arguments) {
 				? std::min(options.frame_count - 1, options.frame_start + request.count - 1)
 				: options.frame_count - 1;
 			options.scan_scale = std::max(1, std::min(100, request.scale)) / 100.0;
+			options.keyframes = decoder.GetKeyFrames();
 
 			auto profile = std::make_shared<hardsub::ScanProfile>();
 			options.profile = profile;

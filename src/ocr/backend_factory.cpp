@@ -89,6 +89,20 @@ public:
 		}
 		return active->Run(image_path, options, mode, cancel);
 	}
+
+	bool AcceptsImagesInMemory() const override {
+		return active && active->AcceptsImagesInMemory();
+	}
+
+	OCRResult RunImage(OCRImage const &image, OCROptions const &options, OcrMode mode,
+	                   std::function<bool()> const &cancel) override {
+		if (!active) {
+			OCRResult result;
+			result.diagnostic = "The OCR engine has not been started.";
+			return result;
+		}
+		return active->RunImage(image, options, mode, cancel);
+	}
 };
 
 /// State behind RunShared(). Leaked on purpose: background tasks can still be
@@ -121,6 +135,15 @@ std::string PaddleUnavailableReason() {
 }
 
 } // namespace
+
+OCRResult OcrBackend::RunImage(OCRImage const &image, OCROptions const &, OcrMode,
+                               std::function<bool()> const &) {
+	OCRResult result;
+	result.diagnostic = image.Valid()
+		? "This OCR engine cannot read an image from memory."
+		: "The OCR input image is empty.";
+	return result;
+}
 
 char const *BackendKindId(OcrBackendKind kind) {
 	switch (kind) {

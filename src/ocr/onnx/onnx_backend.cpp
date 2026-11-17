@@ -29,6 +29,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <string>
 #include <thread>
 #include <utility>
@@ -173,6 +174,8 @@ public:
 
 	std::string Name() const override { return started ? "onnx" : std::string(); }
 
+	bool AcceptsImagesInMemory() const override { return true; }
+
 	OCRResult Run(agi::fs::path const &image_path, OCROptions const &options, OcrMode mode,
 	              std::function<bool()> const &cancel) override {
 		OCRResult result;
@@ -186,9 +189,60 @@ public:
 		if (!LoadImage(image_path, image, result.diagnostic))
 			return result;
 
+		return RunPixels(image, options, mode, cancel);
+	}
+
+	OCRResult RunImage(OCRImage const &input, OCROptions const &options, OcrMode mode,
+	                   std::function<bool()> const &cancel) override {
+		OCRResult result;
+		if (!started) {
+			result.diagnostic = startup_diagnostic.empty()
+				? "The ONNX OCR backend is not running." : startup_diagnostic;
+			return result;
+		}
+		if (!input.Valid()) {
+			result.diagnostic = "The OCR input image is empty.";
+			return result;
+		}
+
+		// The engine scales every input it receives anyway, so one copy of the
+		// pixels is cheaper than encoding and decoding a PNG.
+		wxImage image(input.width, input.height);
+		std::memcpy(image.GetData(), input.rgb,
+		            static_cast<size_t>(input.width) * input.height * 3);
+
+		return RunPixels(image, options, mode, cancel);
+	}
+
+private:
+	OCRResult RunPixels(wxImage &image, OCROptions const &options, OcrMode mode,
+	                    std::function<bool()> const &cancel) {
+		OCRResult result;
 		int const limit = options.det_limit_side_len > 0
 			? std::max(kMinDetSide, std::min(kMaxDetSide, options.det_limit_side_len))
 			: 960;
+
+		// Recognition-only: the caller already knows this is one text line.
+		if (mode == OcrMode::RecOnly) {
+			OCRBox whole;
+			whole.x = 0;
+			whole.y = 0;
+			whole.w = image.GetWidth();
+			whole.h = image.GetHeight();
+			std::string text;
+			double confidence = 0.0;
+			std::string error;
+			if (!RecognizeLine(image, whole, text, confidence, error, false)) {
+				result.diagnostic = error;
+				return result;
+			}
+			if (!text.empty()) {
+				result.lines.push_back(MakeLine(whole, text, confidence));
+				result.text = NormalizeText(result.lines, options.keep_line_breaks);
+			}
+			result.ok = true;
+			return result;
+		}
 
 		std::vector<DetBox> boxes;
 		int detector_width = 0;
@@ -250,7 +304,6 @@ public:
 		return result;
 	}
 
-private:
 	struct OCRBox {
 		int x = 0;
 		int y = 0;
@@ -477,9 +530,12 @@ private:
 	}
 
 	bool RecognizeLine(wxImage const &image, OCRBox const &box, std::string &text,
-	                   double &confidence, std::string &error) {
-		int const margin_x = std::max(1, box.w / 40);
-		int const margin_y = std::max(1, box.h / 10);
+	                   double &confidence, std::string &error, bool inset = true) {
+		// Detector boxes sit exactly on the glyphs, so a small inset keeps the
+		// crop off the stroke edges. A caller that already cropped one line
+		// passes inset=false: its crop is the line, padding included.
+		int const margin_x = inset ? std::max(1, box.w / 40) : 0;
+		int const margin_y = inset ? std::max(1, box.h / 10) : 0;
 		int const left = std::max(0, box.x - margin_x);
 		int const top = std::max(0, box.y - margin_y);
 		int const right = std::min(image.GetWidth(), box.x + box.w + margin_x);

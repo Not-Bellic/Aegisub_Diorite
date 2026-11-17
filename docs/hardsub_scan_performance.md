@@ -40,7 +40,7 @@
 | 阶段 | 预计耗时 | 相对现在 |
 | --- | ---: | ---: |
 | 现在（实测基线） | ~90 min | 1× |
-| 快赢（OCR 内存传图、RecOnly、去重检测、复用关键帧） | ~68 min | 1.3× |
+| 快赢（OCR 内存传图、RecOnly、去重检测、复用关键帧） | ~61 min（实测 1.5×） | 1.5× |
 | + 每帧只用亮度、融合三遍、去整数除法 | ~50 min | 1.8× |
 | + 单遍在线跟踪（干掉每行二次解码） | **~37 min** | 2.4× |
 | + 分块多线程（4 线程） | **~11 min** | 8× |
@@ -181,43 +181,34 @@ aegisub.exe --hardsub-bench <video> --region x,y,w,h --scale 50 --start N --coun
   于是永远只有 1 个候选。`tests/tests/hardsub_timeline_scan.cpp` 里
   `scan_timeline_votes_across_frames_for_short_rows` 在本次改动之前一直是失败的。
 
-### O1. OCR 走内存传图，删掉临时 PNG（1 天，省 ~18%）
+### O1. OCR 走内存传图，删掉临时 PNG（1 天，省 ~18%）——**已完成**
 
-- 现状：`detect`/`recognize` 先 `BuildImage`→`FitToMax`→`CreateTempFileName`→
-  `SaveFile(PNG)`，后端再 `LoadImage` 解回 wxImage。每调用一次多花 25~45 ms。
-- 改法：给 `ocr::OcrBackend` 加 `RunImage(OCRImageView const&, ...)` 重载
-  （宽高 + RGB/RGBA 指针或 `std::vector<unsigned char>`）；ONNX 后端直接用
-  `wxImage(w, h, data, false)` 包装（必要时 `SetData` 拷贝一次），Paddle 后端
-  内部仍落盘。`hardsub::RegionImage` 已经是这个形状，可直接传。
-- 顺带修掉 `wxFileName::CreateTempFileName` 每帧建文件的行为——在开着 Defender
-  的机器上，这是几千次"创建+写入+删除"的实时扫描。
-- 验收：`--hardsub-bench` 的 `ms_png_encode` 归零；同一批帧的文本/置信度不变。
+- `ocr::OcrBackend` 新增 `OCRImage` / `RunImage()` / `AcceptsImagesInMemory()`；
+  ONNX 后端直接吃像素（复制进 wxImage，引擎本来也要缩放），Paddle 后端保持
+  文件路径，runner 对不支持内存的引擎才落盘。
+- `hardsub_ocr_runner.cpp` 统一了"给引擎一张图"的逻辑，对话框与 bench 共用。
+- 实测：OCR 图像准备 4.8 s → **0**（同一段 900 帧），单次采样从 ~125 ms 降到
+  ~30 ms；临时文件也一并消失，不再触发杀软实时扫描。
 
-### O2. 识别只跑识别器，并把 2× 双三次上采样去掉（1 天，省 ~2-3%）
+### O2. 识别只跑识别器，并把 2× 双三次上采样去掉（1 天，省 ~2-3%）——**已完成**
 
-- 现状：`recognize` 用 `OcrMode::Full`，输入是"已知一行"的紧裁切，却仍先跑
-  一遍 DB 检测器；高度 <64 的裁切还会先做 2× 双三次放大（`dialog_hardsub_scan_video.cpp:754`），
-  放大后的图再被识别器归一化到 48 px 高，白做。
-- 改法：加 `OcrMode::RecOnly`——整张图当一行，按 `48 × round(48*w/h)` 直接喂
-  识别器（宽按 32 对齐），跳过检测；扫描路径不再放大。
-- 验收：单行识别 25 ms → 8~12 ms；真实帧 A/B 比对文本与置信度。
+- 新增 `OcrMode::RecOnly`：把整张图当一行，跳过 DB 检测器，按 48 px 高直接喂
+  识别器；ONNX 后端的 `RecognizeLine` 加了 `inset` 参数，调用方已裁好带 padding
+  的行时不再内缩。
+- 扫描路径不再做 2× 双三次上采样（识别器本来就把高度归一化到 48 px）。
+- 实测：OCR 引擎时间 2.3 s → **1.5 s**（52 次检测 + 7 次识别）。
 
-### O3. 每行不要再检测一次（0.5 天，省 ~2%）
+### O3. 每行不要再检测一次（0.5 天，省 ~2%）——**已完成**
 
-- 现状：`:678` 对 rep 帧再跑一次整区检测，只为把框对齐。
-- 改法：track 已经存了 `region_rect`；用"该 track 最近 2~3 次检测框的中位数"
-  代替重新检测。`read_frame` 返回的 `OCRResult::lines` 里本来就带 box，
-  可以顺手更新。
-- 验收：结果行数/边界不变。
+- `hardsub_timeline_scan.cpp` 行扫描阶段删掉了整区 `detect(region)` 重定位：
+  track 里存的框已经带 padding，识别器能容忍几个像素的漂移。每行省一次
+  ~120 ms 的检测（实测 detect 次数 57 → 52）。
 
-### O4. 边界扫描改用真实关键帧表（0.5 天，长字幕收益明显）
+### O4. 边界扫描改用真实关键帧表（0.5 天）——**已完成**
 
-- 现状：`:870` 传的是 `std::vector<int>{}` → `ScanBoundaries` 用 120 帧兜底
-  预卷；长字幕每回溯一次就是一次 120 帧的"回跳+重解"。
-- 改法：`ScanVideoDecoder::GetKeyFrames()` 已经实现（`scan_video_decoder.cpp:133`）
-  但从没人调用；把它通过 `TimelineScanOptions` 或新参数传进 `ScanBoundaries`
-  （单条扫描对话框已经这么做了）。
-- 验收：`--hardsub-bench` 里 `boundary_frames` 对长字幕明显下降；边界不变。
+- `TimelineScanOptions::keyframes` 由调用方从 `ScanVideoDecoder::GetKeyFrames()`
+  填好并传给 `ScanBoundaries`；长字幕不再按 120 帧步长反复"回跳+重解"。
+- 实测：行扫描 8.4 s → **5.7 s**（与 O3 合计）。
 
 ### O5. 单遍在线跟踪：干掉"每行再解一遍"（3-5 天，省 ~27%）★
 

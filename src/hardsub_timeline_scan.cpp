@@ -693,39 +693,11 @@ TimelineScanResult ScanVideoTimeline(TimelineScanOptions const& opts,
 		if (!region.Valid())
 			continue;
 
-		// The track's stored box was captured at some earlier sample and can
-		// drift a few pixels from where the subtitle sits at the representative
-		// frame. Re-detect on the representative frame and pick the row nearest
-		// the stored position, so the template and recognition crop both align
-		// with the text at this exact frame. Falling back to the stored box
-		// keeps a row usable when detection is momentarily empty.
+		// The track's stored box is the one the last detection reported for this
+		// row. Re-detecting on the representative frame to re-align it cost a
+		// whole extra OCR pass per row and bought a pixel or two: the box is
+		// padded below, and the recognizer is tolerant of a few pixels of drift.
 		TimelineRect box = tr.region_rect;
-		try {
-			ocr::OCRResult det = detect(region);
-			if (det.ok && !det.lines.empty()) {
-				auto clusters = ClusterRows(det.lines, scan_region_h);
-				TimelineRect best;
-				double best_d = 1e18;
-				for (auto const& c : clusters) {
-					TimelineRect cr = c.second;
-					if (!cr.Valid())
-						continue;
-					double d = std::abs(static_cast<double>(
-						cr.CenterX() - tr.region_rect.CenterX()))
-						+ std::abs(static_cast<double>(
-						cr.CenterY() - tr.region_rect.CenterY()));
-					if (d < best_d) {
-						best_d = d;
-						best = cr;
-					}
-				}
-				if (best.Valid())
-					box = best;
-			}
-		}
-		catch (...) {
-			box = tr.region_rect;
-		}
 
 		// Pad the box a little so the glyphs never touch the crop edge (which
 		// would make the recognizer hallucinate) and so the boundary template
@@ -902,7 +874,7 @@ TimelineScanResult ScanVideoTimeline(TimelineScanOptions const& opts,
 		scan.tpl_source_height = downscale ? rv.h : 0;
 		auto const boundary_begin = Clock::now();
 		auto res = ScanBoundaries(tpl, rv.x, rv.y, rep, opts.frame_count, scan,
-		                          loader, cancel, ProgressFn(), std::vector<int>{});
+		                          loader, cancel, ProgressFn(), opts.keyframes);
 		profile->ms_boundary += MsBetween(boundary_begin, Clock::now());
 		if (!res.ok)
 			continue;

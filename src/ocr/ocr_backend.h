@@ -32,6 +32,21 @@ enum class OcrMode {
 	/// Detection only: boxes are returned, text is stripped. Much cheaper, and
 	/// enough for boundary confirmation.
 	DetectOnly,
+	/// Recognition only: the whole image is treated as one text line and the
+	/// detector is skipped. The caller already knows where the line is (a scan
+	/// row crop), and the detector would only spend time finding it again.
+	RecOnly,
+};
+
+/// Pixels the caller already has in memory, so an engine that works in memory
+/// does not need a PNG round-trip. RGB, three bytes per pixel, row-major and
+/// tightly packed. The pointer must stay valid for the duration of the call.
+struct OCRImage {
+	int width = 0;
+	int height = 0;
+	unsigned char const *rgb = nullptr;
+
+	bool Valid() const { return width > 0 && height > 0 && rgb != nullptr; }
 };
 
 /// A single OCR engine behind a uniform interface. Implementations may run a
@@ -60,6 +75,16 @@ public:
 	/// fails, so callers never need a second availability query.
 	virtual OCRResult Run(agi::fs::path const& image_path, OCROptions const& options,
 	                      OcrMode mode, std::function<bool()> const& cancel = {}) = 0;
+
+	/// True when RunImage() runs the pixels directly. A file-based engine
+	/// returns false and callers keep handing it a PNG path instead.
+	virtual bool AcceptsImagesInMemory() const { return false; }
+
+	/// Run one image the caller already holds in memory. The default
+	/// implementation fails with a diagnostic; only engines that report
+	/// AcceptsImagesInMemory() implement it.
+	virtual OCRResult RunImage(OCRImage const& image, OCROptions const& options,
+	                           OcrMode mode, std::function<bool()> const& cancel = {});
 };
 
 /// The bundled PaddleOCR-json runtime: a persistent pipe process on Windows,

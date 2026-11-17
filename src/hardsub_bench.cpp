@@ -238,8 +238,8 @@ std::string BuildReport(Request const &request, int width, int height, int frame
                         std::string const &engine, std::string const &error) {
 	ScanProfile const &profile = result.profile;
 	long long const total = std::max<long long>(
-		1, profile.ms_decode + profile.ms_region + profile.ms_change +
-		profile.OcrMs() + profile.ms_ocr_image + profile.ms_boundary);
+		1, profile.MsDecode() + profile.MsRegion() + profile.MsChange() +
+		profile.OcrMs() + profile.MsOcrImage() + profile.MsBoundary());
 	auto pct = [total](long long ms) { return 100.0 * ms / total; };
 
 	std::string json = "{\n";
@@ -265,16 +265,16 @@ std::string BuildReport(Request const &request, int width, int height, int frame
 	json += ",\n  \"decoder\": {\"frames\": " + std::to_string(decoder.frames) +
 		", \"decode_ms\": " + std::to_string(decoder.MsDecode()) +
 		", \"copy_ms\": " + std::to_string(decoder.MsCopy()) + "}";
-	json += ",\n  \"ms\": {\"decode\": " + std::to_string(profile.ms_decode) +
-		", \"region\": " + std::to_string(profile.ms_region) +
-		", \"change\": " + std::to_string(profile.ms_change) +
+	json += ",\n  \"ms\": {\"decode\": " + std::to_string(profile.MsDecode()) +
+		", \"region\": " + std::to_string(profile.MsRegion()) +
+		", \"change\": " + std::to_string(profile.MsChange()) +
 		", \"ocr_engine\": " + std::to_string(profile.OcrMs()) +
-		", \"ocr_image\": " + std::to_string(profile.ms_ocr_image) +
-		", \"boundary\": " + std::to_string(profile.ms_boundary);
-	json += "},\n  \"share\": {\"decode\": " + Number(pct(profile.ms_decode), "%.1f") +
-		", \"pixels\": " + Number(pct(profile.ms_region + profile.ms_change), "%.1f") +
-		", \"ocr\": " + Number(pct(profile.OcrMs() + profile.ms_ocr_image), "%.1f") +
-		", \"rows\": " + Number(pct(profile.ms_boundary), "%.1f") + "}";
+		", \"ocr_image\": " + std::to_string(profile.MsOcrImage()) +
+		", \"boundary\": " + std::to_string(profile.MsBoundary());
+	json += "},\n  \"share\": {\"decode\": " + Number(pct(profile.MsDecode()), "%.1f") +
+		", \"pixels\": " + Number(pct(profile.MsRegion() + profile.MsChange()), "%.1f") +
+		", \"ocr\": " + Number(pct(profile.OcrMs() + profile.MsOcrImage()), "%.1f") +
+		", \"rows\": " + Number(pct(profile.MsBoundary()), "%.1f") + "}";
 
 	json += ",\n  \"first_events\": [";
 	size_t const shown = std::min<size_t>(result.events.size(), 10);

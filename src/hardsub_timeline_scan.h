@@ -40,36 +40,46 @@ enum class ScanPhase {
 	Finalize  ///< sorting, merging and de-duplication
 };
 
-/// Wall-clock breakdown of one whole-video scan, in milliseconds.
+/// Wall-clock breakdown of one whole-video scan, in microseconds.
 ///
 /// The scan fills the frame-side numbers. The OCR callables built by
 /// hardsub_ocr_runner.h fill the OCR numbers into the same profile (they run on
 /// the scan thread), so one profile answers "decode, pixels or OCR?" for a
-/// whole scan instead of only for its OCR part.
+/// whole scan instead of only for its OCR part. Microseconds, not milliseconds:
+/// a single per-frame pixel pass is well under a millisecond and would otherwise
+/// sum to zero.
 struct ScanProfile {
 	int frames = 0;
 	/// Time inside the frame loader: decode plus the copy into the scan buffer.
-	long long ms_decode = 0;
+	long long us_decode = 0;
 	/// Cropping, scaling and colour-converting the scan region.
-	long long ms_region = 0;
+	long long us_region = 0;
 	/// Change detection and the coarse region signature.
-	long long ms_change = 0;
+	long long us_change = 0;
 
 	int ocr_detect_calls = 0;
-	long long ms_detect = 0;
+	long long us_detect = 0;
 	int ocr_recognize_calls = 0;
-	long long ms_recognize = 0;
+	long long us_recognize = 0;
 	/// Building and encoding the image handed to the OCR engine. Split out
 	/// because on this pipeline it can cost as much as the inference itself.
-	long long ms_ocr_image = 0;
+	long long us_ocr_image = 0;
 
 	int rows = 0;
 	int boundary_frames = 0;
-	long long ms_boundary = 0;
+	long long us_boundary = 0;
 
-	long long OcrMs() const { return ms_detect + ms_recognize; }
-	long long Total() const {
-		return ms_decode + ms_region + ms_change + OcrMs() + ms_boundary;
+	long long MsDecode() const { return us_decode / 1000; }
+	long long MsRegion() const { return us_region / 1000; }
+	long long MsChange() const { return us_change / 1000; }
+	long long MsDetect() const { return us_detect / 1000; }
+	long long MsRecognize() const { return us_recognize / 1000; }
+	long long MsOcrImage() const { return us_ocr_image / 1000; }
+	long long MsBoundary() const { return us_boundary / 1000; }
+	long long OcrMs() const { return (us_detect + us_recognize) / 1000; }
+	long long TotalMs() const {
+		return (us_decode + us_region + us_change + us_detect + us_recognize +
+		        us_ocr_image + us_boundary) / 1000;
 	}
 };
 

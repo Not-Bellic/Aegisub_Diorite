@@ -37,8 +37,8 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 
-long long MsBetween(Clock::time_point from, Clock::time_point to) {
-	return std::chrono::duration_cast<std::chrono::milliseconds>(to - from).count();
+long long UsBetween(Clock::time_point from, Clock::time_point to) {
+	return std::chrono::duration_cast<std::chrono::microseconds>(to - from).count();
 }
 
 int Clamp(int v, int lo, int hi) {
@@ -208,17 +208,26 @@ std::vector<unsigned char> RowSignature(RegionImage const& img) {
 	if (!img.Valid())
 		return grid;
 
-	std::vector<int> lum;
-	lum.reserve(img.rgb.size() / 3);
+	// The median only needs a count per luminance value: a 256-entry histogram
+	// is linear where sorting the whole crop was O(n log n) with an allocation,
+	// and this runs for every detected row on every OCR sample.
+	constexpr int kDeviation = 40;
+	int histogram[256] = {0};
+	size_t const pixels = img.rgb.size() / 3;
 	for (size_t i = 0; i < img.rgb.size(); i += 3)
-		lum.push_back(Luma(img.rgb[i], img.rgb[i + 1], img.rgb[i + 2]));
-	if (lum.empty())
+		++histogram[Luma(img.rgb[i], img.rgb[i + 1], img.rgb[i + 2])];
+	if (pixels == 0)
 		return grid;
 
-	std::vector<int> sorted = lum;
-	std::sort(sorted.begin(), sorted.end());
-	int median = sorted[sorted.size() / 2];
-	constexpr int kDeviation = 40;
+	int median = 0;
+	size_t seen = 0;
+	for (int value = 0; value < 256; ++value) {
+		seen += static_cast<size_t>(histogram[value]);
+		if (seen * 2 >= pixels) {
+			median = value;
+			break;
+		}
+	}
 
 	for (int cy = 0; cy < kSignatureGridH; ++cy) {
 		int ys = cy * img.height / kSignatureGridH;
@@ -518,7 +527,7 @@ TimelineScanResult ScanVideoTimeline(TimelineScanOptions const& opts,
 	constexpr double kSignatureMatch = 0.25;
 
 	std::vector<RowTrack> tracks;
-	RegionImage prev;
+	LumaImage prev_luma;
 	bool have_prev = false;
 	int stable_run = 0;
 	bool settled = false;
@@ -538,23 +547,20 @@ TimelineScanResult ScanVideoTimeline(TimelineScanOptions const& opts,
 
 		auto const frame_begin = Clock::now();
 		auto frame = loader(f);
-		profile->ms_decode += MsBetween(frame_begin, Clock::now());
+		profile->us_decode += UsBetween(frame_begin, Clock::now());
 		if (!frame)
 			continue;
 		auto const region_begin = Clock::now();
-		auto reg = downscale
-			? CropRegionScaled(*frame, opts.region_x, opts.region_y,
-			                   opts.region_w, opts.region_h,
-			                   scan_region_w, scan_region_h)
-			: CropRegion(*frame, opts.region_x, opts.region_y,
-			             opts.region_w, opts.region_h);
-		profile->ms_region += MsBetween(region_begin, Clock::now());
-		if (!reg.Valid())
+		LumaImage luma = CropRegionLuma(*frame, opts.region_x, opts.region_y,
+		                                opts.region_w, opts.region_h,
+		                                scan_region_w, scan_region_h);
+		profile->us_region += UsBetween(region_begin, Clock::now());
+		if (!luma.Valid())
 			continue;
 
 		auto const pixels_begin = Clock::now();
 		if (have_prev) {
-			double change = RegionChangedRatio(prev, reg);
+			double change = LumaChangedRatio(prev_luma, luma);
 			if (change > kChangeHigh) {
 				stable_run = 0;
 				settled = false;
@@ -573,14 +579,14 @@ TimelineScanResult ScanVideoTimeline(TimelineScanOptions const& opts,
 			settled = false;
 		}
 
-		unsigned long long h = RegionSignature(reg);
-		profile->ms_change += MsBetween(pixels_begin, Clock::now());
+		unsigned long long h = LumaSignature(luma);
+		profile->us_change += UsBetween(pixels_begin, Clock::now());
 		bool content_changed = !has_ocr || h != last_hash;
 		int since = f - last_ocr;
 		bool do_ocr = detect && (!has_ocr
 			|| (content_changed && settled && since >= detect_every)
 			|| (content_changed && since >= detect_every_max));
-		prev = std::move(reg); // reg is no longer needed unless OCR runs
+		prev_luma = std::move(luma);
 		// Keep have_prev true for every subsequent valid frame so the settle
 		// detector can compare the previous frame with the current one. Without
 		// this, settled is always false and OCR only ever fires on the
@@ -591,10 +597,23 @@ TimelineScanResult ScanVideoTimeline(TimelineScanOptions const& opts,
 		if (!do_ocr)
 			continue;
 
+		// Only the frames that run OCR need colour. Building the RGB region here
+		// keeps the per-frame cost of the other 15 of 16 frames luma-only.
+		auto const colour_begin = Clock::now();
+		RegionImage region = downscale
+			? CropRegionScaled(*frame, opts.region_x, opts.region_y,
+			                   opts.region_w, opts.region_h,
+			                   scan_region_w, scan_region_h)
+			: CropRegion(*frame, opts.region_x, opts.region_y,
+			             opts.region_w, opts.region_h);
+		profile->us_region += UsBetween(colour_begin, Clock::now());
+		if (!region.Valid())
+			continue;
+
 		++out.ocr_samples;
 		ocr::OCRResult det;
 		try {
-			det = detect(prev);
+			det = detect(region);
 		}
 		catch (...) {
 			det = ocr::OCRResult();
@@ -609,7 +628,7 @@ TimelineScanResult ScanVideoTimeline(TimelineScanOptions const& opts,
 			bool center_ok = RowPassesCenterFilter(rect, scan_region_w, opts.center_band);
 			if (opts.center_only && !center_ok)
 				continue;
-			auto crop = CropRegionImage(prev, rect);
+			auto crop = CropRegionImage(region, rect);
 			if (!crop.Valid())
 				continue;
 			auto sig = RowSignature(crop);
@@ -679,7 +698,7 @@ TimelineScanResult ScanVideoTimeline(TimelineScanOptions const& opts,
 
 		auto const row_frame_begin = Clock::now();
 		auto frame = loader(rep);
-		profile->ms_decode += MsBetween(row_frame_begin, Clock::now());
+		profile->us_decode += UsBetween(row_frame_begin, Clock::now());
 		if (!frame)
 			continue;
 		auto const row_region_begin = Clock::now();
@@ -689,7 +708,7 @@ TimelineScanResult ScanVideoTimeline(TimelineScanOptions const& opts,
 			                   scan_region_w, scan_region_h)
 			: CropRegion(*frame, opts.region_x, opts.region_y,
 			             opts.region_w, opts.region_h);
-		profile->ms_region += MsBetween(row_region_begin, Clock::now());
+		profile->us_region += UsBetween(row_region_begin, Clock::now());
 		if (!region.Valid())
 			continue;
 
@@ -875,7 +894,7 @@ TimelineScanResult ScanVideoTimeline(TimelineScanOptions const& opts,
 		auto const boundary_begin = Clock::now();
 		auto res = ScanBoundaries(tpl, rv.x, rv.y, rep, opts.frame_count, scan,
 		                          loader, cancel, ProgressFn(), opts.keyframes);
-		profile->ms_boundary += MsBetween(boundary_begin, Clock::now());
+		profile->us_boundary += UsBetween(boundary_begin, Clock::now());
 		if (!res.ok)
 			continue;
 		profile->boundary_frames += static_cast<int>(res.frames.size());

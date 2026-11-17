@@ -663,7 +663,7 @@ void DialogHardSubScanVideo::OnScan(wxCommandEvent&) {
 			p.total = total;
 			p.ocr_samples = profile->ocr_detect_calls;
 			p.ocr_ms = profile->OcrMs();
-			p.image_ms = profile->ms_ocr_image;
+			p.image_ms = profile->MsOcrImage();
 			p.elapsed_ms = elapsed;
 			handler->AddPendingEvent(ValueEvent<HardSubScanVideoProgress>(
 				EVT_HARDSUB_SCANV_PROGRESS, -1, p));
@@ -800,27 +800,27 @@ void DialogHardSubScanVideo::OnScanDone(ValueEvent<HardSubScanVideoOutcome>& eve
 		auto const& prof = outcome.profile;
 		long long const ocr_ms = prof.OcrMs();
 		long long const total_ms = std::max<long long>(
-			1, prof.ms_decode + prof.ms_region + prof.ms_change + ocr_ms + prof.ms_ocr_image + prof.ms_boundary);
+			1, prof.MsDecode() + prof.MsRegion() + prof.MsChange() + ocr_ms + prof.MsOcrImage() + prof.MsBoundary());
 		auto pct = [total_ms](long long ms) {
 			return static_cast<int>(100.0 * ms / total_ms);
 		};
 		LOG_I("hardsub/scan") << prof.frames << " frames, " << prof.rows << " rows, "
-			<< prof.boundary_frames << " boundary frames: decode " << prof.ms_decode
+			<< prof.boundary_frames << " boundary frames: decode " << prof.MsDecode()
 			<< " ms (ffms " << outcome.decoder_ms << " + copy " << outcome.copy_ms
-			<< "), region " << prof.ms_region << " ms, change " << prof.ms_change
-			<< " ms, boundary " << prof.ms_boundary << " ms, OCR engine " << ocr_ms
+			<< "), region " << prof.MsRegion() << " ms, change " << prof.MsChange()
+			<< " ms, boundary " << prof.MsBoundary() << " ms, OCR engine " << ocr_ms
 			<< " ms (" << prof.ocr_detect_calls << " detect, "
-			<< prof.ocr_recognize_calls << " recognize), OCR image " << prof.ms_ocr_image
+			<< prof.ocr_recognize_calls << " recognize), OCR image " << prof.MsOcrImage()
 			<< " ms";
 		if (prof.ocr_detect_calls > 0) {
 			SetStatus(wxString::Format(
 				           _("Scan complete: %d lines detected (OCR %d samples, %.1f s)."),
 				           static_cast<int>(events_.size()), prof.ocr_detect_calls, ocr_ms / 1000.0)
 				+ wxString::Format("  |  decode %d%%  pixels %d%%  OCR %d%%  rows %d%%",
-				                   pct(prof.ms_decode),
-				                   pct(prof.ms_region + prof.ms_change),
-				                   pct(ocr_ms + prof.ms_ocr_image),
-				                   pct(prof.ms_boundary)));
+				                   pct(prof.MsDecode()),
+				                   pct(prof.MsRegion() + prof.MsChange()),
+				                   pct(ocr_ms + prof.MsOcrImage()),
+				                   pct(prof.MsBoundary())));
 		}
 		else {
 			SetStatus(wxString::Format(_("Scan complete: %d lines detected."),

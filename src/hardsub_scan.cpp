@@ -340,6 +340,184 @@ double MeanAbsDiff(RegionImage const& a, RegionImage const& b) {
 	return double(total) / (a.rgb.size() * 255.0) * 255.0;
 }
 
+LumaImage CropRegionLuma(VideoFrame const& frame, int x, int y, int width, int height,
+                         int out_width, int out_height) {
+	LumaImage out;
+	if (out_width <= 0 || out_height <= 0)
+		return out;
+	if (frame.width == 0 || frame.height == 0 || frame.pitch < frame.width)
+		return out;
+	if (frame.pix_fmt == 0) {
+		if (frame.pitch < frame.width * 4
+		    || frame.data.size() < frame.pitch * frame.height)
+			return out;
+	}
+	else {
+		// YUV 4:2:0: the luma plane covers the whole frame, so a luma-only crop
+		// needs no chroma sanity check beyond the plane itself.
+		if (frame.data.size() < frame.pitch * frame.height)
+			return out;
+	}
+
+	int x0 = std::max(0, x);
+	int y0 = std::max(0, y);
+	int x1 = std::min<int>(static_cast<int>(frame.width), x + width);
+	int y1 = std::min<int>(static_cast<int>(frame.height), y + height);
+	if (x1 <= x0 || y1 <= y0)
+		return out;
+
+	const int src_w = x1 - x0;
+	const int src_h = y1 - y0;
+	out.width = out_width;
+	out.height = out_height;
+	out.data.assign(static_cast<size_t>(out_width) * out_height, 0);
+
+	auto block_begin = [](int index, int out_n, int src_n) {
+		return static_cast<int>(static_cast<long long>(index) * src_n / out_n);
+	};
+	auto block_end = [](int index, int out_n, int src_n) {
+		return static_cast<int>(static_cast<long long>(index + 1) * src_n / out_n);
+	};
+
+	const bool is_10bit = frame.pix_fmt == 3;
+	const size_t y_stride = frame.pitch;
+
+	// The output-to-source block map is the same for every row (columns) and
+	// every column (rows). Computing it once per axis keeps the per-pixel loop
+	// free of the 64-bit multiply-and-divide it used to run twice per output
+	// pixel.
+	std::vector<int> col_begin(out_width), col_end(out_width);
+	for (int ox = 0; ox < out_width; ++ox) {
+		col_begin[ox] = x0 + block_begin(ox, out_width, src_w);
+		col_end[ox] = x0 + block_end(ox, out_width, src_w);
+		if (col_end[ox] <= col_begin[ox])
+			col_end[ox] = col_begin[ox] + 1;
+	}
+	std::vector<int> row_begin(out_height), row_end(out_height);
+	for (int oy = 0; oy < out_height; ++oy) {
+		row_begin[oy] = y0 + block_begin(oy, out_height, src_h);
+		row_end[oy] = y0 + block_end(oy, out_height, src_h);
+		if (row_end[oy] <= row_begin[oy])
+			row_end[oy] = row_begin[oy] + 1;
+	}
+
+	// The average is one division per output pixel, and on a 4K region that is
+	// hundreds of thousands of divisions per frame. Every scan scale the UI
+	// offers is an exact fraction of the source, so in the common case all
+	// blocks have the same pixel count: divide by a reciprocal instead.
+	bool const uniform = (src_w % out_width == 0) && (src_h % out_height == 0);
+	unsigned const uniform_count = uniform
+		? static_cast<unsigned>(src_w / out_width) * static_cast<unsigned>(src_h / out_height)
+		: 0;
+	unsigned const uniform_recip = uniform_count > 1
+		? static_cast<unsigned>((1ULL << 32) / uniform_count)
+		: 0;
+
+	for (int oy = 0; oy < out_height; ++oy) {
+		int const sy0 = row_begin[oy];
+		int const sy1 = row_end[oy];
+		int const rows = sy1 - sy0;
+		unsigned char *out_row = out.data.data() + static_cast<size_t>(oy) * out_width;
+
+		for (int ox = 0; ox < out_width; ++ox) {
+			int const sx0 = col_begin[ox];
+			int const sx1 = col_end[ox];
+
+			unsigned sum = 0;
+			for (int sy = sy0; sy < sy1; ++sy) {
+				int const src_row = frame.flipped ? int(frame.height) - 1 - sy : sy;
+				const unsigned char *row = frame.data.data() + static_cast<size_t>(src_row) * y_stride;
+				if (frame.pix_fmt == 0) {
+					const unsigned char *p = row + static_cast<size_t>(sx0) * 4;
+					for (int sx = sx0; sx < sx1; ++sx, p += 4)
+						sum += (static_cast<unsigned>(p[0]) + p[1] + p[2]) / 3;
+				}
+				else if (is_10bit) {
+					for (int sx = sx0; sx < sx1; ++sx) {
+						uint16_t const v = *reinterpret_cast<uint16_t const*>(row + static_cast<size_t>(sx) * 2);
+						sum += static_cast<unsigned>((v >> 6) * 255 / 1023);
+					}
+				}
+				else {
+					for (int sx = sx0; sx < sx1; ++sx)
+						sum += row[sx];
+				}
+			}
+
+			unsigned value = 0;
+			if (uniform && uniform_count == 1) {
+				// 1x1 blocks (an unscaled region): the average is the sample.
+				value = sum;
+			}
+			else if (uniform && uniform_count > 1) {
+				value = static_cast<unsigned>(
+					(static_cast<unsigned long long>(sum) * uniform_recip) >> 32);
+				// The reciprocal is truncated, so the quotient can be one low.
+				if (static_cast<unsigned long long>(value + 1) * uniform_count <= sum)
+					++value;
+			}
+			else if (rows > 0) {
+				size_t const count = static_cast<size_t>(rows) * (sx1 - sx0);
+				if (count > 0)
+					value = sum / static_cast<unsigned>(count);
+			}
+			out_row[ox] = static_cast<unsigned char>(value);
+		}
+	}
+	return out;
+}
+
+double LumaChangedRatio(LumaImage const& a, LumaImage const& b, int threshold) {
+	if (!a.Valid() || !b.Valid() || a.width != b.width || a.height != b.height)
+		return 1.0;
+
+	size_t changed = 0;
+	size_t const n = a.data.size();
+	for (size_t i = 0; i < n; ++i) {
+		int const d = static_cast<int>(a.data[i]) - static_cast<int>(b.data[i]);
+		if (std::abs(d) > threshold)
+			++changed;
+	}
+	return n > 0 ? double(changed) / n : 0.0;
+}
+
+unsigned long long LumaSignature(LumaImage const& img) {
+	// 16x8 cells: coarse enough to ignore grain, fine enough to notice a
+	// subtitle appearing or a cut.
+	constexpr int kGridW = 16;
+	constexpr int kGridH = 8;
+	std::vector<unsigned char> grid(static_cast<size_t>(kGridW) * kGridH, 0);
+	if (img.Valid()) {
+		for (int cy = 0; cy < kGridH; ++cy) {
+			int const ys = cy * img.height / kGridH;
+			int const ye = std::max(ys + 1, std::min(img.height, (cy + 1) * img.height / kGridH));
+			for (int cx = 0; cx < kGridW; ++cx) {
+				int const xs = cx * img.width / kGridW;
+				int const xe = std::max(xs + 1, std::min(img.width, (cx + 1) * img.width / kGridW));
+				unsigned long long sum = 0;
+				unsigned count = 0;
+				for (int y = ys; y < ye; ++y) {
+					const unsigned char *row = img.data.data() + static_cast<size_t>(y) * img.width;
+					for (int x = xs; x < xe; ++x) {
+						sum += row[x];
+						++count;
+					}
+				}
+				if (count > 0)
+					grid[static_cast<size_t>(cy) * kGridW + cx] =
+						static_cast<unsigned char>(sum / count);
+			}
+		}
+	}
+
+	unsigned long long h = 1469598103934665603ULL;
+	for (unsigned char b : grid) {
+		h ^= b;
+		h *= 1099511628211ULL;
+	}
+	return h;
+}
+
 double RegionChangedRatio(RegionImage const& a, RegionImage const& b, int pixel_threshold) {
 	if (!a.Valid() || !b.Valid() || a.width != b.width || a.height != b.height)
 		return 1.0;

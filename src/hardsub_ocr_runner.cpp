@@ -29,8 +29,8 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 
-long long ElapsedMs(Clock::time_point from) {
-	return std::chrono::duration_cast<std::chrono::milliseconds>(
+long long ElapsedUs(Clock::time_point from) {
+	return std::chrono::duration_cast<std::chrono::microseconds>(
 		Clock::now() - from).count();
 }
 
@@ -96,7 +96,7 @@ int GuardSEH(std::function<void()> const &fn) {
 ocr::OCRResult RunCrop(std::shared_ptr<ocr::OcrBackend> const &backend,
                        RegionImage const &crop, ocr::OCROptions const &options,
                        ocr::OcrMode mode, std::function<bool()> const &cancel,
-                       long long *image_ms) {
+                       long long *image_us) {
 	ocr::OCRResult out;
 	if (!backend)
 		return out;
@@ -119,8 +119,8 @@ ocr::OCRResult RunCrop(std::shared_ptr<ocr::OcrBackend> const &backend,
 	temp = wxFileName::CreateTempFileName("aegisub-hardsub-");
 	if (temp.empty() || !img.SaveFile(temp, wxBITMAP_TYPE_PNG))
 		return out;
-	if (image_ms)
-		*image_ms += ElapsedMs(encode_begin);
+	if (image_us)
+		*image_us += ElapsedUs(encode_begin);
 
 	ocr::OCRResult tmp = backend->Run(agi::fs::path(std::wstring(temp.wc_str())),
 	                                  options, mode, cancel);
@@ -150,11 +150,11 @@ RegionDetector MakeOcrDetector(std::shared_ptr<ocr::OcrBackend> backend,
 			++profile->ocr_detect_calls;
 		int code = GuardSEH([&] {
 			auto const begin = Clock::now();
-			long long image_ms = 0;
-			out = RunCrop(backend, crop, options, ocr::OcrMode::DetectOnly, cancel, &image_ms);
+			long long image_us = 0;
+			out = RunCrop(backend, crop, options, ocr::OcrMode::DetectOnly, cancel, &image_us);
 			if (profile) {
-				profile->ms_ocr_image += image_ms;
-				profile->ms_detect += ElapsedMs(begin) - image_ms;
+				profile->us_ocr_image += image_us;
+				profile->us_detect += ElapsedUs(begin) - image_us;
 			}
 		});
 		if (code)
@@ -173,11 +173,11 @@ RegionRecognizer MakeOcrRecognizer(std::shared_ptr<ocr::OcrBackend> backend,
 			++profile->ocr_recognize_calls;
 		int code = GuardSEH([&] {
 			auto const begin = Clock::now();
-			long long image_ms = 0;
-			out = RunCrop(backend, crop, options, ocr::OcrMode::RecOnly, cancel, &image_ms);
+			long long image_us = 0;
+			out = RunCrop(backend, crop, options, ocr::OcrMode::RecOnly, cancel, &image_us);
 			if (profile) {
-				profile->ms_ocr_image += image_ms;
-				profile->ms_recognize += ElapsedMs(begin) - image_ms;
+				profile->us_ocr_image += image_us;
+				profile->us_recognize += ElapsedUs(begin) - image_us;
 			}
 		});
 		if (code)

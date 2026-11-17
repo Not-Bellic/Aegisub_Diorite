@@ -41,6 +41,33 @@ struct RegionImage {
 /// when the clamped rectangle is empty or the frame is malformed.
 RegionImage CropRegion(VideoFrame const& frame, int x, int y, int width, int height);
 
+/// A single-plane luminance image: the cheap per-frame representation of the
+/// scan region. Change detection and the region signature only need luminance,
+/// and only the frames that actually run OCR need colour.
+struct LumaImage {
+	int width = 0;
+	int height = 0;
+	/// width * height bytes, row-major
+	std::vector<unsigned char> data;
+
+	bool Valid() const { return width > 0 && height > 0 && data.size() == size_t(width) * height; }
+};
+
+/// Crop the given rectangle of a frame and reduce it to luminance at
+/// `out_width` x `out_height` with a box (area average) filter, in one pass over
+/// the source rectangle. For YUV frames this reads the luma plane only, which
+/// makes it several times cheaper than the RGB conversion; for BGRA frames the
+/// luminance is averaged from the three colour channels.
+LumaImage CropRegionLuma(VideoFrame const& frame, int x, int y, int width, int height,
+                         int out_width, int out_height);
+
+/// Fraction (0..1) of pixels whose luminance differs by more than `threshold`.
+/// The luminance counterpart of RegionChangedRatio.
+double LumaChangedRatio(LumaImage const& a, LumaImage const& b, int threshold = 12);
+
+/// Coarse 8x8 luminance signature of a LumaImage, same role as RegionSignature.
+unsigned long long LumaSignature(LumaImage const& img);
+
 /// Copy the given rectangle of a video frame into an RGB RegionImage and resample
 /// it to `out_width` x `out_height` with a box (area average) filter.
 ///

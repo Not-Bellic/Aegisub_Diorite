@@ -58,8 +58,16 @@ if ($exactGitTag -match $semVerMatch) {
   $version['RESOURCE_BASE_VERSION'] = $Matches[1..3]
   $version['INSTALLER_VERSION'] = $gitVersionString = ($Matches[1..3] -join '.') + @("-$($Matches[4])",'')[!$Matches[4]]
 } else {
-  foreach ($rev in (git -C $repositoryRootPath rev-list --tags 2>$null)) {
-    $tag = git -C $repositoryRootPath describe --exact-match --tags $rev 2>$null
+  # `git rev-list --tags` lists every commit reachable from any tag, which is
+  # thousands in this repository; describing each one spawned thousands of git
+  # processes and stalled the first build after a new HEAD for about ten
+  # minutes. Ask git for the tags reachable from HEAD instead: one process.
+  $candidateTags = @(git -C $repositoryRootPath tag --merged HEAD --sort=-creatordate 2>$null)
+  if ($candidateTags.Count -eq 0) {
+    # Git too old for `tag --merged`, or a HEAD that no tag reaches.
+    $candidateTags = @(git -C $repositoryRootPath tag --sort=-creatordate 2>$null)
+  }
+  foreach ($tag in $candidateTags) {
     if ($tag -match $semVerMatch) {#
       $version['TAGGED_RELEASE'] = $false
       $version['RESOURCE_BASE_VERSION'] = $Matches[1..3]

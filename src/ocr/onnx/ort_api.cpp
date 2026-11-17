@@ -14,6 +14,8 @@
 
 #include "ort_api.h"
 
+#include "../../options.h"
+
 #include <libaegisub/path.h>
 
 #include <cstdlib>

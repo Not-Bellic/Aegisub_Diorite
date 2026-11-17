@@ -287,16 +287,17 @@ jobs:
           Get-Location | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           popd
 
-      - name: Cache OCR runtime (Windows)
+      - name: Cache OCR runtime and models (Windows)
         if: matrix.config.os == 'windows-latest'
         uses: actions/cache@v4
         with:
           path: build/installer-deps/ocr
-          key: paddleocr-json-v1.4.1-dev.1-paddleocr-v3.0.0-ppocrv5-server-det-server-rec-legacy-export-v1
+          key: onnxocr-ppocrv6-small-onnxruntime-1.32.0-v1
 
-      - name: Download OCR runtime (Windows)
+      - name: Download OCR runtime and models (Windows)
         if: matrix.config.os == 'windows-latest'
-        run: .\tools\ocr\download_paddleocr_windows.ps1 -DestinationDir "build\installer-deps\ocr"
+        shell: pwsh
+        run: .\tools\ocr\download_onnx_ocr.ps1 -DestinationDir "build\installer-deps\ocr"
 
       - name: Install dependencies (Linux)
         if: startsWith(matrix.config.os, 'ubuntu-')
@@ -390,6 +391,73 @@ jobs:
       - name: Generate Windows portable installer
         if: matrix.config.os == 'windows-latest'
         run: cd build && ninja win-portable
+
+      # Run the OCR engine out of the packaged artifact, so this covers the
+      # models, the runtime DLL and the folder layout as shipped, not just the
+      # build tree. The image is a fixed fixture: the same input every run.
+      - name: Smoke-test the packaged OCR engine
+        if: matrix.config.os == 'windows-latest'
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          $workspace = $env:GITHUB_WORKSPACE
+          $report = Join-Path $workspace 'build\ocr-selftest.json'
+          $exe = Join-Path $workspace 'build\aegisub-portable\aegisub.exe'
+          $image = Join-Path $workspace 'tests\ocr\selftest.png'
+          foreach ($path in @($exe, $image)) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Packaged OCR self-test input is missing: $path"
+            }
+          }
+
+          $start = New-Object System.Diagnostics.ProcessStartInfo
+          $start.FileName = $exe
+          $start.Arguments = '--ocr-selftest "' + $image + '" --out "' + $report + '" --backend onnx'
+          $start.UseShellExecute = $false
+          $start.RedirectStandardOutput = $true
+          $start.WorkingDirectory = Split-Path -Parent $exe
+          $process = [System.Diagnostics.Process]::Start($start)
+          # Read asynchronously: ReadToEnd() on its own would block forever if
+          # the engine hangs, and the timeout below would never fire.
+          $stdout = $process.StandardOutput.ReadToEndAsync()
+          if (-not $process.WaitForExit(120000)) {
+            $process.Kill()
+            throw 'The packaged OCR self-test did not finish within two minutes.'
+          }
+          Write-Output $stdout.Result
+          if ($process.ExitCode -ne 0) {
+            throw "The packaged OCR self-test failed with exit code $($process.ExitCode)."
+          }
+
+          $result = Get-Content -LiteralPath $report -Raw | ConvertFrom-Json
+          if (-not $result.ok -or $result.text -notmatch 'Aegisub') {
+            throw "The packaged OCR engine did not read the fixture text: '$($result.text)'"
+          }
+          Write-Output ("OCR self-test: '{0}' ({1:N1} ms engine start, {2:N1} ms recognition)" -f `
+            $result.text, $result.start_ms, $result.run_ms)
+
+          # The portable zip must carry the same files the test just used.
+          $zipList = 7z l "build\aegisub-portable-64.zip"
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Could not list the portable zip.'
+          }
+          foreach ($name in @('ocr\\onnx\\onnxruntime\.dll', 'ocr\\onnx\\ppocrv6_small_det\.onnx',
+                              'ocr\\onnx\\ppocrv6_small_rec\.onnx', 'ocr\\onnx\\ppocrv6_dict\.txt')) {
+            if (-not ($zipList -match $name)) {
+              throw "Portable zip is missing the OCR asset matching $name"
+            }
+          }
+          if ($zipList -match 'PaddleOCR-json\.exe') {
+            throw 'Portable zip must not contain the retired PaddleOCR-json runtime'
+          }
+
+      - name: Upload packaged OCR self-test report
+        uses: actions/upload-artifact@v4
+        if: always() && matrix.config.os == 'windows-latest'
+        with:
+          name: ${{ matrix.config.name }} - ocr-selftest
+          path: build/ocr-selftest.json
+          if-no-files-found: warn
 
       - name: Exercise responsive startup, rescans, cancellation and lazy renderers
         if: matrix.config.os == 'windows-latest'

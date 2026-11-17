@@ -281,13 +281,23 @@ if (!(Test-Path dictionaries)) {
 	Invoke-WebRequestWithRetry -Uri "https://raw.githubusercontent.com/TypesettingTools/Aegisub-dictionaries/master/dicts/en_US.dic" -OutFile dictionaries/en_US.dic
 }
 
-# PaddleOCR runtime and bundled models
+# ONNX Runtime OCR engine and the PP-OCRv6 small models. This replaced the
+# PaddleOCR-json bundle (bin/, models/, OCR_RUNTIME_VERSION.txt), which is no
+# longer shipped: drop any leftover copy from the staging folder so an older
+# checkout cannot leak into the package.
+$OcrStage = Join-Path $DepsDir "ocr"
 if ($SkipOCR -or $Env:AEGISUB_SKIP_OCR_PACKAGE -eq "1") {
-	Write-Output "Skipping - OCR runtime package assets"
+	Write-Output "Skipping - OCR package assets"
 }
 else {
-	$OcrRuntimeSetup = Join-Path $SourceRoot "tools\ocr\download_paddleocr_windows.ps1"
-	& $OcrRuntimeSetup -DestinationDir (Join-Path $DepsDir "ocr")
+	foreach ($legacy in @("bin", "models", "OCR_RUNTIME_VERSION.txt", "licenses\THIRD_PARTY_OCR.txt")) {
+		$stale = Join-Path $OcrStage $legacy
+		if (Test-Path -LiteralPath $stale) {
+			Remove-Item -LiteralPath $stale -Recurse -Force
+		}
+	}
+	$OcrRuntimeSetup = Join-Path $SourceRoot "tools\ocr\download_onnx_ocr.ps1"
+	& $OcrRuntimeSetup -DestinationDir $OcrStage
 	if(!$?) { Exit $LASTEXITCODE }
 }
 

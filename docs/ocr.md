@@ -1,8 +1,9 @@
 # Image to Text OCR
 
-Aegisub Windows release artifacts include offline OCR support through
-PaddleOCR-json. Users do not need Python, PaddlePaddle, PaddleOCR, model files,
-or extra DLL setup.
+Aegisub Windows release artifacts include offline OCR support through an
+in-process ONNX Runtime engine running PP-OCRv6 small. Users do not need Python,
+PaddlePaddle, PaddleOCR, a separate OCR process, model downloads, or extra DLL
+setup.
 
 ## How to use
 
@@ -22,32 +23,22 @@ Windows portable zips and installers contain:
 
 ```text
 ocr/
-  OCR_RUNTIME_VERSION.txt
-  bin/
-    PaddleOCR-json.exe
-    runtime DLLs
-  models/
-    #cmd.txt
-    config.txt
-    config_ppocrv5.txt
-    ch_ppocr_mobile_v2.0_cls_infer/
-    PP-OCRv5_server_det_infer/
-      inference.pdmodel
-      inference.pdiparams
-      inference.yml
-    PP-OCRv5_server_rec_infer/
-      inference.pdmodel
-      inference.pdiparams
-      inference.yml
-    ppocrv5_dict.txt
+  onnx/
+    onnxruntime.dll
+    onnxruntime_providers_shared.dll
+    ppocrv6_small_det.onnx
+    ppocrv6_small_rec.onnx
+    ppocrv6_dict.txt
+    LICENSE.onnxruntime.txt
+    ThirdPartyNotices.onnxruntime.txt
+    VERSION.txt
   licenses/
-    THIRD_PARTY_OCR.txt
-    copied upstream license/readme files when present
+    THIRD_PARTY_ONNX_OCR.txt
 ```
 
-The OCR dialog uses this folder next to `aegisub.exe`. If any required file is
-deleted, Aegisub reports the exact missing path and the files present in that
-folder.
+The OCR engine uses this folder next to `aegisub.exe`. If any required file is
+deleted, Aegisub reports the exact missing path, and the OCR actions stay
+disabled instead of failing mid-scan.
 
 ## OCR engines
 
@@ -103,13 +94,12 @@ detects the frame-exact start/end of the burned-in subtitle:
    boundaries. The text mask is built from luminance extremes (bright white or
    very dark ink) rather than background deviation, so moving scene texture
    behind the subtitle does not make the coverage fluctuate.
-2. When enabled (default), boundaries are confirmed with the bundled OCR
-   runtime in detection-only mode (`-det=true -rec=false -cls=false`), which
-   only needs text boxes and is several times faster than full recognition.
-   Confirmation only runs when a boundary is ambiguous (a fade or occlusion
-   leaves text-like coverage just outside the run), and the boundary moves at
-   most a couple of frames, only toward frames where both the pixel signal and
-   OCR agree.
+2. When enabled (default), boundaries are confirmed with the OCR engine in
+   detection-only mode, which only needs text boxes and is several times faster
+   than full recognition (about 27 ms versus 78 ms for a 4K strip). Confirmation
+   only runs when a boundary is ambiguous (a fade or occlusion leaves text-like
+   coverage just outside the run), and the boundary moves at most a couple of
+   frames, only toward frames where both the pixel signal and OCR agree.
 3. A lightweight content check warns when the detected range may contain
    multiple subtitles (duration far longer than the text suggests, or an
    interior pixel dip). The opt-in "Strict timeline (OCR text check)" option
@@ -140,150 +130,92 @@ faint text in a wide 4K region at a proportional detection cost; lowering it
 speeds the scan up when subtitles are large. The 0/180 degree angle classifier
 is skipped everywhere now, since burned-in subtitles are horizontal.
 
-The OCR engine for boundary checks is started asynchronously when the scan
-begins, so model loading overlaps the pixel scan instead of adding to the scan
-time, and it is torn down when the scan finishes (no OCR process is kept alive
-while the dialog is merely open). Video playback is paused for the duration of
-the scan so the decoder worker is not contended. Scans typically finish in
-1–4 seconds depending on video resolution, codec and run length.
+The OCR engine for boundary checks is loaded in the background when the dialog
+opens, so model loading overlaps choosing the region instead of adding to the
+scan time, and it is released when the dialog closes. Video playback is paused
+for the duration of the scan so the decoder worker is not contended. Scans
+typically finish in 1–4 seconds depending on video resolution, codec and run
+length.
 
-The packaging step removes the unused PaddleOCR-json sample language packs and
-PP-OCRv4 model folders from `ocr/models`. Release artifacts keep only the active
-PP-OCRv5 server detector/server recognizer assets, the PP-OCRv5 dictionary and
-config, and the angle classifier folder used by the generated config.
-The OCR language selector exposes the bundled PP-OCRv5 profile only; deleted
-legacy language configs are not referenced at runtime.
+The portable package and the installer copy the staged OCR assets next to
+`aegisub.exe`; the ONNX engine needs no separate process, no generated config
+file and no language-specific model profile.
 
-## Bundled runtime
+## Bundled engine
 
-The current Windows bundle uses:
+Windows artifacts ship:
 
-- PaddleOCR-json `v1.4.1-dev.1`
-- Download:
-  `https://github.com/hiroi-sora/PaddleOCR-json/releases/download/v1.4.1-dev/PaddleOCR-json_v1.4.1_dev.1_windows_x86-64_cpu_mkl.7z`
-- SHA256:
-  `46c3c82e889e5ed0c8a066ed3a089cd200d1e482823601bab23f5e41d137700f`
+- ONNX Runtime `1.32.0` for Windows x64 (CPU), from the official release zip.
+- `ppocrv6_small_det.onnx` (PP-OCRv6 small text detector, opset 20).
+- `ppocrv6_small_rec.onnx` (PP-OCRv6 small recognizer, opset 11).
+- `ppocrv6_dict.txt` (18 383 entry recognition dictionary).
 
-PaddleOCR-json remains the only OCR runtime. Aegisub calls the external
-sidecar, captures stdout and stderr separately, and parses the same Image2Text
-JSON result contract.
+The measured latency, the model's input/output contract and the file hashes are
+documented in [ocr-onnx-models.md](ocr-onnx-models.md). The engine is loaded from
+`ocr/onnx` with `LoadLibrary`, so a build without the folder simply keeps the
+OCR actions disabled.
 
-The default model combo is:
+### Legacy PaddleOCR-json bundle
 
-- Detection: `PP-OCRv5_server_det`
-- Recognition: `PP-OCRv5_server_rec`
-- Dictionary: `ppocrv5_dict.txt`
-- Config: `models/config_ppocrv5.txt`
-
-The server detector is intentionally larger and slower than the mobile
-detector, but it is the default because full-frame anime signs and credits are
-usually detection-limited. The larger package size is accepted for better
-Image2Text region detection quality.
-
-## PP-OCRv5 model format
-
-The official PP-OCRv5 inference archives used as source inputs are:
-
-- `PP-OCRv5_server_det_infer.tar`
-- `PP-OCRv5_server_rec_infer.tar`
-
-Those archives contain:
-
-- `inference.json`
-- `inference.yml`
-- `inference.pdiparams`
-
-They do not contain `inference.pdmodel`. That is expected for the official
-Paddle 3/PIR PP-OCRv5 archives.
-
-PaddleOCR-json `v1.4.1-dev.1` does not load those JSON/PIR folders directly. It
-still expects legacy Paddle Inference model folders with `inference.pdmodel`
-and `inference.pdiparams`. The Windows packaging script therefore keeps the
-selected PP-OCRv5 server-detector/server-recognizer combo, downloads the
-official PP-OCRv5 source archives for validation, then exports the official
-PP-OCRv5 pretrained weights with PaddleOCR `v3.0.0` using:
-
-```text
-Global.export_with_pir=False
-FLAGS_enable_pir_api=0
-```
-
-The packaged folders are the legacy-exported PP-OCRv5 folders that
-PaddleOCR-json can load. This is a packaging/export step only; it does not make
-Python PaddleOCR the runtime backend.
-
-## Config
-
-`models/config_ppocrv5.txt` is generated with one setting per line:
-
-```text
-det_model_dir models/PP-OCRv5_server_det_infer
-cls_model_dir models/ch_ppocr_mobile_v2.0_cls_infer
-rec_model_dir models/PP-OCRv5_server_rec_infer
-rec_char_dict_path models/ppocrv5_dict.txt
-```
-
-The default detection path must point to
-`models/PP-OCRv5_server_det_infer`, and the recognition path points to
-`models/PP-OCRv5_server_rec_infer`. The classifier remains the bundled
-PaddleOCR-json compatible classifier.
+The bundled PaddleOCR-json sidecar (PP-OCRv5 server det/rec) is no longer
+packaged. The backend is still compiled in for one release (`WITH_PADDLEOCR`):
+dropping the old `ocr/bin` and `ocr/models` folders next to `aegisub.exe` and
+setting `Tool/OCR/Backend` to `paddle` restores that path for comparison or for
+an installation that already has the files.
+`tools/ocr/download_paddleocr_windows.ps1` still exists for that, but CI and the
+installer no longer run it.
 
 ## Build and packaging
-
-Windows CI explicitly passes:
-
-```text
--Dpaddleocr=enabled
-```
 
 The pinned runtime and models are prepared by:
 
 ```powershell
-tools\ocr\download_paddleocr_windows.ps1 -DestinationDir build\installer-deps\ocr
+tools\ocr\download_onnx_ocr.ps1 -DestinationDir build\installer-deps\ocr
 ```
 
-The script validates the official PP-OCRv5 source archives as JSON/PIR model
-folders, exports legacy runtime folders, validates the final config paths, and
-runs a PaddleOCR-json smoke check against `models/config_ppocrv5.txt`. Packaging
-fails clearly if the issue is missing files, unsupported model format, a bad
-config path, or runtime executable failure.
+The script downloads the release assets, verifies every file's size and
+SHA-256, unpacks `onnxruntime.dll` and writes the license files; it skips files
+that are already correct, so it is safe to re-run. `tools\win-installer-setup.ps1`
+calls it, and the portable packaging script copies `build\installer-deps\ocr`
+into the artifact as `ocr`.
 
-The installer and portable packaging scripts copy `build\installer-deps\ocr`
-into the artifact as `ocr` next to `aegisub.exe`.
+CI caches `build/installer-deps/ocr` with the key
+`onnxocr-ppocrv6-small-onnxruntime-1.32.0-v1`; change the key whenever the
+pinned runtime or models change.
 
-## Verifying PP-OCRv5 in an artifact
+## Verifying the OCR engine in an artifact
+
+CI runs the packaged engine, not just the build tree:
+
+```powershell
+build\aegisub-portable\aegisub.exe --ocr-selftest tests\ocr\selftest.png `
+    --out build\ocr-selftest.json --backend onnx
+```
+
+The step fails unless the process exits 0, the report reads `Aegisub OCR 123`
+from the fixed fixture, and the portable zip contains
+`ocr/onnx/onnxruntime.dll`, both models and the dictionary. It also fails if the
+retired `PaddleOCR-json.exe` reappears in the zip.
 
 Check these files in the portable zip or installer output:
 
 ```text
-ocr/OCR_RUNTIME_VERSION.txt
-ocr/bin/PaddleOCR-json.exe
-ocr/models/config_ppocrv5.txt
-ocr/models/PP-OCRv5_server_det_infer/inference.pdmodel
-ocr/models/PP-OCRv5_server_det_infer/inference.pdiparams
-ocr/models/PP-OCRv5_server_rec_infer/inference.pdmodel
-ocr/models/PP-OCRv5_server_rec_infer/inference.pdiparams
-ocr/models/ppocrv5_dict.txt
+ocr/onnx/onnxruntime.dll
+ocr/onnx/ppocrv6_small_det.onnx
+ocr/onnx/ppocrv6_small_rec.onnx
+ocr/onnx/ppocrv6_dict.txt
+ocr/licenses/THIRD_PARTY_ONNX_OCR.txt
 ```
 
-`OCR_RUNTIME_VERSION.txt` should include
-`ppocrv5-server-det-server-rec-legacy-export`. The config should reference
-`PP-OCRv5_server_det_infer`, `PP-OCRv5_server_rec_infer`, and
-`ppocrv5_dict.txt`.
-
-If model loading fails at runtime, Aegisub reports a model/runtime error instead
-of a JSON parse error. The debug details include the full PaddleOCR-json stdout
-and stderr so missing model files, bad config paths, and runtime loader errors
-can be diagnosed.
+If the engine fails to start, the OCR dialogs report the missing file or the
+runtime's error message instead of an empty result, and `--ocr-selftest` returns
+exit code 2 with the same text in its report.
 
 ## Updating OCR runtime versions
 
-1. Update `$ReleaseTag`, `$RuntimeVersion`, `$ArchiveName`, `$ArchiveUrl`, and
-   `$ArchiveSha256` in `tools/ocr/download_paddleocr_windows.ps1`.
-2. If changing the PP-OCRv5 source model combo, update the official inference
-   archive URLs, pretrained weight URLs, PaddleOCR export config paths, and
-   validation expectations in the same script.
-3. Keep `PaddleOCR-json.exe` as the runtime backend unless the OCR architecture
-   is intentionally redesigned.
-4. Update the cache key in `.github/workflows/ci.yml`.
-5. Let GitHub Actions build the Windows installer and portable artifacts.
+1. Publish a new asset release and update the file names, sizes and SHA-256
+   values in `tools/ocr/download_onnx_ocr.ps1`.
+2. Update `docs/ocr-onnx-models.md` (contract, hashes, measured latency).
+3. Update the cache key in `.github/workflows/ci.yml`.
+4. Let GitHub Actions build and smoke-test the Windows installer and portable
+   artifacts.

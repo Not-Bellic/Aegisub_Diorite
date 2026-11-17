@@ -28,10 +28,23 @@
 #include <libaegisub/path.h>
 
 #include <cstring>
+#include <chrono>
 
 namespace hardsub {
 
-ScanVideoDecoder::ScanVideoDecoder(agi::fs::path const& filename, std::string& error) {
+ScanDecoderSettings ScanDecoderSettingsForScan() {
+	ScanDecoderSettings settings;
+	// See the header: software decoding is several times cheaper here.
+	settings.hardware_decoding = false;
+	if (config::opt) {
+		settings.threads = OPT_GET("Provider/Video/FFmpegSource/Decoding Threads")->GetInt();
+		settings.unsafe_seeking = OPT_GET("Provider/Video/FFmpegSource/Unsafe Seeking")->GetBool();
+	}
+	return settings;
+}
+
+ScanVideoDecoder::ScanVideoDecoder(agi::fs::path const& filename, std::string& error,
+                                   ScanDecoderSettings const& settings) {
 	error.clear();
 
 	char errbuf[1024];
@@ -42,7 +55,7 @@ ScanVideoDecoder::ScanVideoDecoder(agi::fs::path const& filename, std::string& e
 	err.SubType = FFMS_ERROR_SUCCESS;
 
 	// FFMS_Init is idempotent; the main provider has already called it.
-	FFMS_SetHardwareDecoding(OPT_GET("Provider/Video/FFmpegSource/Hardware Decoding")->GetBool());
+	FFMS_SetHardwareDecoding(settings.hardware_decoding);
 
 	std::string narrow = filename.string();
 	FFMS_Index *idx = nullptr;
@@ -77,9 +90,9 @@ ScanVideoDecoder::ScanVideoDecoder(agi::fs::path const& filename, std::string& e
 		return;
 	}
 
-	int threads = OPT_GET("Provider/Video/FFmpegSource/Decoding Threads")->GetInt();
+	int threads = settings.threads;
 	int seek_mode = FFMS_SEEK_NORMAL;
-	if (OPT_GET("Provider/Video/FFmpegSource/Unsafe Seeking")->GetBool())
+	if (settings.unsafe_seeking)
 		seek_mode = FFMS_SEEK_UNSAFE;
 
 	source_ = FFMS_CreateVideoSource(narrow.c_str(), track, idx, threads, seek_mode, &err);
@@ -154,13 +167,17 @@ std::shared_ptr<VideoFrame> ScanVideoDecoder::GetFrame(int n) const {
 	err.ErrorType = FFMS_ERROR_SUCCESS;
 	err.SubType = FFMS_ERROR_SUCCESS;
 
+	auto const decode_begin = std::chrono::steady_clock::now();
 	const FFMS_Frame *fr = FFMS_GetFrame(static_cast<FFMS_VideoSource*>(source_), n, &err);
+	stats_.us_decode += std::chrono::duration_cast<std::chrono::microseconds>(
+		std::chrono::steady_clock::now() - decode_begin).count();
 	if (!fr)
 		return {};
 
 	// Copy the luma plane and the chroma planes into the reusable buffer.
 	// The Y plane stride is always Linesize[0]; 10-bit formats store two
 	// bytes per sample so the total byte count is scaled accordingly.
+	auto const copy_begin = std::chrono::steady_clock::now();
 	int bytes_per_sample = pix_fmt_ == 3 ? 2 : 1;
 	size_t y_bytes = static_cast<size_t>(fr->Linesize[0]) * height_ * bytes_per_sample;
 	size_t chroma_rows = height_ / 2;
@@ -180,6 +197,9 @@ std::shared_ptr<VideoFrame> ScanVideoDecoder::GetFrame(int n) const {
 	frame_store_.pitch = fr->Linesize[0] * bytes_per_sample;
 	frame_store_.flipped = false;
 	frame_store_.pix_fmt = pix_fmt_;
+	stats_.us_copy += std::chrono::duration_cast<std::chrono::microseconds>(
+		std::chrono::steady_clock::now() - copy_begin).count();
+	++stats_.frames;
 
 	// The chroma planes immediately follow the luma plane in the copy.
 	return std::shared_ptr<VideoFrame>(&frame_store_, [](VideoFrame*) {});
@@ -191,8 +211,13 @@ std::shared_ptr<VideoFrame> ScanVideoDecoder::GetFrame(int n) const {
 
 namespace hardsub {
 
-ScanVideoDecoder::ScanVideoDecoder(agi::fs::path const&, std::string& error) {
+ScanVideoDecoder::ScanVideoDecoder(agi::fs::path const&, std::string& error,
+                                   ScanDecoderSettings const&) {
 	error = from_wx(_("FFMS2 support is not available in this build."));
+}
+
+ScanDecoderSettings ScanDecoderSettingsForScan() {
+	return ScanDecoderSettings();
 }
 
 ScanVideoDecoder::~ScanVideoDecoder() = default;

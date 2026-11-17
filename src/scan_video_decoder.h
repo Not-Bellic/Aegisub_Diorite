@@ -24,6 +24,25 @@
 
 namespace hardsub {
 
+/// Decoder settings the scan path needs from the caller: the console benchmark
+/// runs before the options are loaded, so the decoder cannot read them itself.
+struct ScanDecoderSettings {
+	bool hardware_decoding = false;
+	/// FFMS decoding threads; 0 or less lets FFMS pick a default.
+	int threads = 0;
+	bool unsafe_seeking = false;
+};
+
+/// The settings the scan path uses, from the provider options. Requires the
+/// options to be loaded; console modes that run before that use the defaults.
+///
+/// Hardware decoding is deliberately off. Measured through this pipeline on a
+/// 4K60 AV1 file, D3D11VA costs 13.5 ms per frame (decode plus the texture
+/// download) while dav1d costs 2.2 ms, so the option that makes playback
+/// cheaper makes a full-video scan six times more expensive. The flag stays
+/// available for the benchmark, which is how that number is produced.
+ScanDecoderSettings ScanDecoderSettingsForScan();
+
 /// Lightweight FFMS2 decoder used by the hard subtitle scan.
 ///
 /// Decodes frames in their native YUV format instead of the full-frame BGRA
@@ -40,7 +59,8 @@ class ScanVideoDecoder {
 public:
 	/// Opens `filename` with FFMS2, reusing the provider's index cache when
 	/// possible. `error` receives a human-readable message on failure.
-	explicit ScanVideoDecoder(agi::fs::path const& filename, std::string& error);
+	explicit ScanVideoDecoder(agi::fs::path const& filename, std::string& error,
+	                          ScanDecoderSettings const& settings = ScanDecoderSettings());
 	~ScanVideoDecoder();
 
 	ScanVideoDecoder(ScanVideoDecoder const&) = delete;
@@ -52,6 +72,20 @@ public:
 	int GetWidth() const { return width_; }
 	int GetHeight() const { return height_; }
 	std::vector<int> GetKeyFrames() const;
+
+	/// Per-call cost, for the scan's timing profile. Splits the FFMS decode from
+	/// the copy into the reusable buffer so a scan report can tell a slow codec
+	/// apart from a needless full-frame copy. Microseconds are accumulated
+	/// because one call is well under a millisecond of copy time.
+	struct Stats {
+		long long us_decode = 0;
+		long long us_copy = 0;
+		int frames = 0;
+		long long MsDecode() const { return us_decode / 1000; }
+		long long MsCopy() const { return us_copy / 1000; }
+	};
+	Stats const& GetStats() const { return stats_; }
+	void ResetStats() { stats_ = Stats(); }
 
 	/// Returns a native-format frame (VideoFrame::pix_fmt set) or nullptr on
 	/// failure. The returned frame is only valid until the next call; the
@@ -66,6 +100,7 @@ private:
 	int frame_count_ = 0;
 	int pix_fmt_ = 0;
 	mutable VideoFrame frame_store_;
+	mutable Stats stats_;
 };
 
 } // namespace hardsub

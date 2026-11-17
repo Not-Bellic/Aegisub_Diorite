@@ -870,7 +870,8 @@ void DialogHardSubScan::StartRecognize(int frame) {
 		// Prefer the lightweight YUV scan decoder for the small crop window,
 		// which avoids the main provider's full-frame conversion on 4K video.
 		std::string decoder_error;
-		auto decoder = std::make_shared<hardsub::ScanVideoDecoder>(video_filename, decoder_error);
+		auto decoder = std::make_shared<hardsub::ScanVideoDecoder>(video_filename, decoder_error,
+			hardsub::ScanDecoderSettingsForScan());
 		bool use_decoder = !video_filename.empty() && decoder->Valid();
 		auto loader = use_decoder
 			? hardsub::FrameLoader([decoder](int f) { return decoder->GetFrame(f); })
@@ -1120,7 +1121,8 @@ void DialogHardSubScan::OnScan(wxCommandEvent&) {
 		// per-frame cost to a few milliseconds. If that fails for any reason
 		// the scan falls back to the normal provider path.
 		std::string decoder_error;
-		auto decoder = std::make_shared<hardsub::ScanVideoDecoder>(video_filename, decoder_error);
+		auto decoder = std::make_shared<hardsub::ScanVideoDecoder>(video_filename, decoder_error,
+			hardsub::ScanDecoderSettingsForScan());
 		bool use_decoder = !video_filename.empty() && decoder->Valid();
 		auto scan_tpl = tpl;
 		if (use_decoder) {

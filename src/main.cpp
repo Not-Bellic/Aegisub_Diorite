@@ -51,6 +51,7 @@
 #include "include/aegisub/context.h"
 #include "libresrc/libresrc.h"
 #include "options.h"
+#include "hardsub_bench.h"
 #include "ocr/ocr_selftest.h"
 #include "mangetsu_renderer_offer.h"
 #include "include/aegisub/subtitles_provider.h"
@@ -177,9 +178,9 @@ bool AegisubApp::OnInit() {
 
 	config::path = new agi::Path;
 
-	// `--ocr-selftest` is the console mode the packaging smoke test uses: it
-	// must not open a window or read the user configuration, and it reports
-	// through its exit code instead of the event loop.
+	// `--ocr-selftest` and `--hardsub-bench` are the console modes: they must
+	// not open a window or read the user configuration, and they report through
+	// their exit code instead of the event loop.
 	{
 		auto const& cli = argv.GetArguments();
 		std::vector<std::string> cli_args;
@@ -187,6 +188,12 @@ bool AegisubApp::OnInit() {
 		// cli[0] is the executable path, not an argument.
 		for (size_t i = 1; i < cli.size(); ++i)
 			cli_args.push_back(from_wx(cli[i]));
+		if (hardsub::BenchRequested(cli_args)) {
+			// The scan and the OCR engine log; the real sink is created a few
+			// lines below, after this mode has already exited.
+			agi::log::log = new agi::log::LogSink;
+			hardsub::RunBench(cli_args); // does not return
+		}
 		if (ocr::SelfTestRequested(cli_args)) {
 			// The OCR engine and the file helpers log; the real sink is created
 			// a few lines below, after this mode has already exited.

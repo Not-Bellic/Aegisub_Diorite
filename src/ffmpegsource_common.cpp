@@ -139,6 +139,12 @@ FFmpegSourceProvider::AskForTrackSelection(const std::map<int, std::string> &Tra
 
 /// @brief Set ffms2 log level according to setting in config.dat
 void FFmpegSourceProvider::SetLogLevel() {
+	// Console modes (the OCR self-test, the hard subtitle scan benchmark) index
+	// videos before the options exist.
+	if (!config::opt) {
+		FFMS_SetLogLevel(FFMS_LOG_QUIET);
+		return;
+	}
 	auto LogLevel = OPT_GET("Provider/FFmpegSource/Log Level")->GetString();
 	boost::to_lower(LogLevel);
 
@@ -161,6 +167,10 @@ void FFmpegSourceProvider::SetLogLevel() {
 }
 
 FFMS_IndexErrorHandling FFmpegSourceProvider::GetErrorHandlingMode() {
+	// Console modes run before the options are loaded; an indexing error that
+	// aborts the scan is worse than the default there.
+	if (!config::opt)
+		return FFMS_IEH_STOP_TRACK;
 	auto Mode = OPT_GET("Provider/Audio/FFmpegSource/Decode Error Handling")->GetString();
 	boost::to_lower(Mode);
 

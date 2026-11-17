@@ -22,6 +22,7 @@
 #include "localization/localization_matcher.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <cstdint>
@@ -33,6 +34,12 @@
 namespace hardsub {
 
 namespace {
+
+using Clock = std::chrono::steady_clock;
+
+long long MsBetween(Clock::time_point from, Clock::time_point to) {
+	return std::chrono::duration_cast<std::chrono::milliseconds>(to - from).count();
+}
 
 int Clamp(int v, int lo, int hi) {
 	return std::max(lo, std::min(hi, v));
@@ -469,7 +476,7 @@ TimelineScanResult ScanVideoTimeline(TimelineScanOptions const& opts,
                                      RegionDetector const& detect,
                                      RegionRecognizer const& recognize,
                                      CancelFn const& cancel,
-                                     ProgressFn const& progress,
+                                     PhaseProgressFn const& progress,
                                      RowCallback const& row_callback) {
 	TimelineScanResult out;
 	if (!loader) {
@@ -480,6 +487,10 @@ TimelineScanResult ScanVideoTimeline(TimelineScanOptions const& opts,
 		out.error = "Invalid scan options.";
 		return out;
 	}
+
+	std::shared_ptr<ScanProfile> profile = opts.profile;
+	if (!profile)
+		profile = std::make_shared<ScanProfile>();
 
 	const int start = Clamp(opts.frame_start, 0, opts.frame_count - 1);
 	const int end = opts.frame_end < 0
@@ -523,20 +534,25 @@ TimelineScanResult ScanVideoTimeline(TimelineScanOptions const& opts,
 		}
 		++done;
 		if (progress)
-			progress(done, total);
+			progress(ScanPhase::Main, done, total);
 
+		auto const frame_begin = Clock::now();
 		auto frame = loader(f);
+		profile->ms_decode += MsBetween(frame_begin, Clock::now());
 		if (!frame)
 			continue;
+		auto const region_begin = Clock::now();
 		auto reg = downscale
 			? CropRegionScaled(*frame, opts.region_x, opts.region_y,
 			                   opts.region_w, opts.region_h,
 			                   scan_region_w, scan_region_h)
 			: CropRegion(*frame, opts.region_x, opts.region_y,
 			             opts.region_w, opts.region_h);
+		profile->ms_region += MsBetween(region_begin, Clock::now());
 		if (!reg.Valid())
 			continue;
 
+		auto const pixels_begin = Clock::now();
 		if (have_prev) {
 			double change = RegionChangedRatio(prev, reg);
 			if (change > kChangeHigh) {
@@ -558,11 +574,12 @@ TimelineScanResult ScanVideoTimeline(TimelineScanOptions const& opts,
 		}
 
 		unsigned long long h = RegionSignature(reg);
+		profile->ms_change += MsBetween(pixels_begin, Clock::now());
 		bool content_changed = !has_ocr || h != last_hash;
 		int since = f - last_ocr;
-		bool do_ocr = !has_ocr
+		bool do_ocr = detect && (!has_ocr
 			|| (content_changed && settled && since >= detect_every)
-			|| (content_changed && since >= detect_every_max);
+			|| (content_changed && since >= detect_every_max));
 		prev = std::move(reg); // reg is no longer needed unless OCR runs
 		// Keep have_prev true for every subsequent valid frame so the settle
 		// detector can compare the previous frame with the current one. Without
@@ -650,20 +667,29 @@ TimelineScanResult ScanVideoTimeline(TimelineScanOptions const& opts,
 	scan.confirm_frames = opts.confirm_frames;
 	scan.min_duration_frames = opts.min_duration_frames;
 
+	int row_done = 0;
 	for (auto const& tr : tracks) {
 		if (tr.last_seen < tr.first_seen)
 			continue;
+		++profile->rows;
+		if (progress)
+			progress(ScanPhase::Rows, row_done, static_cast<int>(tracks.size()));
+		++row_done;
 		int rep = tr.first_seen + (tr.last_seen - tr.first_seen) / 2;
 
+		auto const row_frame_begin = Clock::now();
 		auto frame = loader(rep);
+		profile->ms_decode += MsBetween(row_frame_begin, Clock::now());
 		if (!frame)
 			continue;
+		auto const row_region_begin = Clock::now();
 		auto region = downscale
 			? CropRegionScaled(*frame, opts.region_x, opts.region_y,
 			                   opts.region_w, opts.region_h,
 			                   scan_region_w, scan_region_h)
 			: CropRegion(*frame, opts.region_x, opts.region_y,
 			             opts.region_w, opts.region_h);
+		profile->ms_region += MsBetween(row_region_begin, Clock::now());
 		if (!region.Valid())
 			continue;
 
@@ -833,12 +859,19 @@ TimelineScanResult ScanVideoTimeline(TimelineScanOptions const& opts,
 		// the scan decoder's sequential pass, so voting costs a few decode
 		// milliseconds rather than another seek. Long, confident readings skip
 		// the extra calls entirely.
+		//
+		// The window runs to the end of the video, not to the track's last
+		// sighting: a subtitle often appears and disappears between two OCR
+		// samples, so a track has exactly one sighting and sampling from
+		// `last_seen` would never add a second reading. A sample past the end of
+		// the run reads nothing (or another subtitle) and loses the vote, so
+		// widening the window is safe.
 		int samples = std::max(1, opts.consensus_samples);
 		bool suspect = candidates.empty()
 			|| OcrCharCount(NormalizeOcrText(candidates.front().first)) <= 4
 			|| candidates.front().second < 0.88;
 		if (samples > 1 && suspect) {
-			int last = std::min(tr.last_seen, opts.frame_count - 1);
+			int last = opts.frame_count - 1;
 			for (int offset = 1; offset < samples; ++offset) {
 				int sample = rep + offset;
 				if (sample > last)
@@ -867,10 +900,13 @@ TimelineScanResult ScanVideoTimeline(TimelineScanOptions const& opts,
 		scan.max_frames = 0;
 		scan.tpl_source_width = downscale ? rv.w : 0;
 		scan.tpl_source_height = downscale ? rv.h : 0;
+		auto const boundary_begin = Clock::now();
 		auto res = ScanBoundaries(tpl, rv.x, rv.y, rep, opts.frame_count, scan,
 		                          loader, cancel, ProgressFn(), std::vector<int>{});
+		profile->ms_boundary += MsBetween(boundary_begin, Clock::now());
 		if (!res.ok)
 			continue;
+		profile->boundary_frames += static_cast<int>(res.frames.size());
 
 		TimelineRowEvent ev;
 		ev.start_frame = res.start_frame;
@@ -899,6 +935,12 @@ TimelineScanResult ScanVideoTimeline(TimelineScanOptions const& opts,
 			row_callback(ev);
 		out.events.push_back(ev);
 	}
+
+	if (progress)
+		progress(ScanPhase::Rows, static_cast<int>(tracks.size()),
+		         static_cast<int>(tracks.size()));
+	if (progress)
+		progress(ScanPhase::Finalize, 0, 1);
 
 	// Order by start frame (and vertical position for stable output), then merge
 	// rows that share exactly the same start/end into a single multi-line event.
@@ -969,8 +1011,12 @@ TimelineScanResult ScanVideoTimeline(TimelineScanOptions const& opts,
 		out.events = DedupeTimelineEvents(std::move(out.events), opts.min_text_chars,
 		                                  0.8, 2);
 
+	profile->frames = done;
 	out.ok = true;
 	out.frames_evaluated = done;
+	out.profile = *profile;
+	if (progress)
+		progress(ScanPhase::Finalize, 1, 1);
 	return out;
 }
 

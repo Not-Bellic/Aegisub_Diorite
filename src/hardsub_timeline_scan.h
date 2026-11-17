@@ -30,6 +30,49 @@
 
 namespace hardsub {
 
+/// Coarse phases of a whole-video scan. The UI maps each phase onto its own
+/// slice of the progress bar: the frame pass and the per-row boundary pass have
+/// very different durations, and only reporting the frame pass left the bar at
+/// 100% while a quarter of the work was still running.
+enum class ScanPhase {
+	Main,     ///< one pass over every frame
+	Rows,     ///< per-row boundary refinement
+	Finalize  ///< sorting, merging and de-duplication
+};
+
+/// Wall-clock breakdown of one whole-video scan, in milliseconds.
+///
+/// The scan fills the frame-side numbers. The OCR callables built by
+/// hardsub_ocr_runner.h fill the OCR numbers into the same profile (they run on
+/// the scan thread), so one profile answers "decode, pixels or OCR?" for a
+/// whole scan instead of only for its OCR part.
+struct ScanProfile {
+	int frames = 0;
+	/// Time inside the frame loader: decode plus the copy into the scan buffer.
+	long long ms_decode = 0;
+	/// Cropping, scaling and colour-converting the scan region.
+	long long ms_region = 0;
+	/// Change detection and the coarse region signature.
+	long long ms_change = 0;
+
+	int ocr_detect_calls = 0;
+	long long ms_detect = 0;
+	int ocr_recognize_calls = 0;
+	long long ms_recognize = 0;
+	/// Building and encoding the image handed to the OCR engine. Split out
+	/// because on this pipeline it can cost as much as the inference itself.
+	long long ms_ocr_image = 0;
+
+	int rows = 0;
+	int boundary_frames = 0;
+	long long ms_boundary = 0;
+
+	long long OcrMs() const { return ms_detect + ms_recognize; }
+	long long Total() const {
+		return ms_decode + ms_region + ms_change + OcrMs() + ms_boundary;
+	}
+};
+
 /// Options for scanning an entire video for hard subtitles inside a configurable
 /// region. The true (frame-exact) start/end of each detected row is recovered by
 /// the same template-coverage scan used by the single-subtitle dialog; OCR is
@@ -93,6 +136,12 @@ struct TimelineScanOptions {
 	/// Merge rows that describe the same on-screen subtitle: overlapping
 	/// interval, same visual line, similar text.
 	bool dedupe_events = true;
+
+	/// Where the scan writes its per-phase timing. The caller may share this
+	/// profile with the OCR callables (see hardsub_ocr_runner.h) so their costs
+	/// land in the same report; when empty the scan keeps a private profile and
+	/// copies it into the result.
+	std::shared_ptr<ScanProfile> profile;
 };
 
 /// A bounding rectangle in region-relative pixel coordinates.
@@ -135,6 +184,8 @@ struct TimelineScanResult {
 	std::vector<TimelineRowEvent> events;
 	int frames_evaluated = 0;
 	int ocr_samples = 0;
+	/// Final timing numbers, including the OCR costs written by the callables.
+	ScanProfile profile;
 };
 
 /// Loads one frame by number; returning nullptr aborts the scan.
@@ -146,6 +197,8 @@ using RegionRecognizer = std::function<ocr::OCRResult(RegionImage const&)>;
 /// Invoked once for every fully recognized row as soon as its text and timing
 /// are resolved, so the UI can show it while the rest of the video is scanned.
 using RowCallback = std::function<void(TimelineRowEvent const&)>;
+/// Progress within the current phase: (phase, done, total).
+using PhaseProgressFn = std::function<void(ScanPhase, int, int)>;
 
 /// Scan every frame in [frame_start, frame_end] of the given region, discover the
 /// hard-subtitle rows with sparse OCR, then recover each row's exact start/end
@@ -155,7 +208,7 @@ TimelineScanResult ScanVideoTimeline(TimelineScanOptions const& opts,
                                      RegionDetector const& detect,
                                      RegionRecognizer const& recognize,
                                      CancelFn const& cancel = CancelFn(),
-                                     ProgressFn const& progress = ProgressFn(),
+                                     PhaseProgressFn const& progress = PhaseProgressFn(),
                                      RowCallback const& row_callback = RowCallback());
 
 // ---- Pure helpers (unit-testable without a decoder or OCR runtime) -----------

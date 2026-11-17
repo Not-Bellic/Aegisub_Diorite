@@ -27,6 +27,7 @@
 #include "compat.h"
 #include "command/command.h"
 #include "format.h"
+#include "hardsub_ocr_runner.h"
 #include "hardsub_region_tool.h"
 #include "include/aegisub/context.h"
 #include "libresrc/libresrc.h"
@@ -114,55 +115,10 @@ void SaveBoolOption(std::string const& name, bool value) {
 	try { OPT_SET(name)->SetBool(value); } catch (...) { }
 }
 
-/// Removes the temporary PNG when this task returns, on any path.
-struct TempPngGuard {
-	wxString &path;
-	explicit TempPngGuard(wxString& p) : path(p) {}
-	~TempPngGuard() {
-		if (!path.empty())
-			agi::fs::Remove(agi::fs::path(std::wstring(path.wc_str())));
-	}
-};
-
-wxImage BuildImage(hardsub::RegionImage const& crop, int scale) {
-	if (!crop.Valid())
-		return wxImage();
-	wxImage img(crop.width, crop.height);
-	std::memcpy(img.GetData(), crop.rgb.data(), crop.rgb.size());
-	if (scale > 1)
-		img = img.Scale(crop.width * scale, crop.height * scale, wxIMAGE_QUALITY_BICUBIC);
-	return img;
-}
-
-/// Scales an image so its longest side is at most `max_side` (only downscales).
-/// The whole-video scan feeds a large region (e.g. 3840x432) to OCR on every
-/// sample; bounding it avoids the big-image codec/OCR edge cases and speeds the
-/// scan up. The caller maps any OCR box coordinates back by the ratio of the
-/// original to the returned image's size.
-wxImage FitToMax(wxImage img, int max_side) {
-	if (!img.IsOk())
-		return img;
-	int w = img.GetWidth();
-	int h = img.GetHeight();
-	int longest = std::max(w, h);
-	if (longest > max_side) {
-		double s = static_cast<double>(max_side) / longest;
-		img = img.Scale(std::max(1, static_cast<int>(w * s)),
-		                std::max(1, static_cast<int>(h * s)), wxIMAGE_QUALITY_BICUBIC);
-	}
-	return img;
-}
-
-/// Milliseconds since `from`, for the per-scan OCR cost report.
-long long ElapsedMs(std::chrono::steady_clock::time_point from) {
-	return std::chrono::duration_cast<std::chrono::milliseconds>(
-		std::chrono::steady_clock::now() - from).count();
-}
-
 /// Calls `fn` under a SEH guard. Returns 0 on success, or the SEH exception code
 /// if `fn` hit a structured exception (e.g. an access violation in a third-party
-/// library). Lets the scan survive a crashing OCR/encode call instead of taking
-/// the whole process down.
+/// library). Lets the scan survive a crashing call instead of taking the whole
+/// process down.
 int GuardSEH(std::function<void()> const& fn) {
 	__try {
 		fn();
@@ -171,28 +127,6 @@ int GuardSEH(std::function<void()> const& fn) {
 	__except (EXCEPTION_EXECUTE_HANDLER) {
 		return static_cast<int>(GetExceptionCode());
 	}
-}
-
-// Runs one image through the warmed backend. The backend reports its own
-// diagnostic when the runtime is unusable, so a false return only means "no
-// result for this image".
-bool RunBackend(std::shared_ptr<ocr::OcrBackend> const& backend,
-                agi::fs::path const& image_path, ocr::OCROptions const& options,
-                ocr::OcrMode mode, std::function<bool()> const& cancel,
-                ocr::OCRResult& out) {
-	if (!backend)
-		return false;
-	out = backend->Run(image_path, options, mode, cancel);
-	return out.ok;
-}
-
-double AverageConfidence(ocr::OCRResult const& result) {
-	if (result.lines.empty())
-		return 0.0;
-	double sum = 0.0;
-	for (auto const& line : result.lines)
-		sum += line.confidence;
-	return sum / result.lines.size();
 }
 
 std::string ToAssTime(int ms) {
@@ -668,9 +602,6 @@ void DialogHardSubScanVideo::OnScan(wxCommandEvent&) {
 	cancel_scan_ = false;
 	scanning_ = true;
 	events_.clear();
-	scan_ocr_samples_ = 0;
-	scan_ocr_ms_ = 0;
-	scan_encode_ms_ = 0;
 	PopulateResults();
 	progress->SetRange(1000);
 	progress->SetValue(0);
@@ -683,11 +614,17 @@ void DialogHardSubScanVideo::OnScan(wxCommandEvent&) {
 	if (resume_playback_)
 		c->videoController->Stop();
 
+	// One profile, shared by the frame pass and the OCR callables, so the
+	// completion report says whether decode, pixels or OCR owns the time.
+	auto profile = std::make_shared<hardsub::ScanProfile>();
+	options.profile = profile;
+
 	auto handler = this;
-	scan_thread_ = std::thread([handler, options, video_filename]() mutable {
+	scan_thread_ = std::thread([handler, options, video_filename, profile]() mutable {
 		auto cancel = [handler] { return handler->cancel_scan_.load(); };
 		std::string decoder_error;
-		auto decoder = std::make_shared<hardsub::ScanVideoDecoder>(video_filename, decoder_error);
+		auto decoder = std::make_shared<hardsub::ScanVideoDecoder>(video_filename, decoder_error,
+			hardsub::ScanDecoderSettingsForScan());
 		bool use_decoder = !video_filename.empty() && decoder->Valid();
 		auto loader = use_decoder
 			? hardsub::FrameLoader([decoder](int f) { return decoder->GetFrame(f); })
@@ -701,90 +638,33 @@ void DialogHardSubScanVideo::OnScan(wxCommandEvent&) {
 		ocr_options.use_angle_cls = false;
 		ocr_options.det_limit_side_len =
 			ReadIntOption("Tool/OCR/Detect Limit Side Len", 0);
-		std::shared_ptr<ocr::OcrBackend> rec_backend;
-		std::function<ocr::OCRResult(hardsub::RegionImage const&)> detect;
-		std::function<ocr::OCRResult(hardsub::RegionImage const&)> recognize;
-		// Use a single full-pipeline engine for both detection (client-side
-		// read-only boxes) and recognition, so the OCR response shape is always
-		// the well-tested full-pipeline format.
-		rec_backend = WaitForOcrEngine(handler->ocr_full_state_, 10000);
-		detect = [handler, rec_backend, ocr_options, cancel](hardsub::RegionImage const& crop) -> ocr::OCRResult {
-			ocr::OCRResult out;
-			int code = GuardSEH([&] {
-				handler->scan_ocr_samples_.fetch_add(1);
-				wxString temp;
-				TempPngGuard guard(temp);
-				auto const encode_begin = std::chrono::steady_clock::now();
-				wxImage img = FitToMax(BuildImage(crop, 1), 1600);
-				if (!img.IsOk())
-					return;
-				temp = wxFileName::CreateTempFileName("aegisub-hardsub-");
-				if (temp.empty() || !img.SaveFile(temp, wxBITMAP_TYPE_PNG))
-					return;
-				handler->scan_encode_ms_.fetch_add(ElapsedMs(encode_begin));
-				ocr::OCRResult tmp;
-				auto const ocr_begin = std::chrono::steady_clock::now();
-				bool const ok = RunBackend(rec_backend, agi::fs::path(std::wstring(temp.wc_str())),
-				                           ocr_options, ocr::OcrMode::DetectOnly, cancel, tmp);
-				handler->scan_ocr_ms_.fetch_add(ElapsedMs(ocr_begin));
-				if (!ok)
-					return;
-				double sx = static_cast<double>(crop.width) / img.GetWidth();
-				double sy = static_cast<double>(crop.height) / img.GetHeight();
-				for (auto& line : tmp.lines)
-					for (auto& pt : line.box) {
-						pt.first = static_cast<int>(pt.first * sx);
-						pt.second = static_cast<int>(pt.second * sy);
-					}
-				out = std::move(tmp);
-			});
-			if (code)
-				return ocr::OCRResult();
-			return out;
-		};
-		recognize = [handler, rec_backend, ocr_options, cancel](hardsub::RegionImage const& crop) -> ocr::OCRResult {
-			ocr::OCRResult out;
-			int code = GuardSEH([&] {
-				wxString temp;
-				TempPngGuard guard(temp);
-				auto const encode_begin = std::chrono::steady_clock::now();
-				// Only upscale genuinely small crops. The detector downscales
-				// anything wider than its input cap, so upscaling an ordinary
-				// line buys no extra glyph detail and roughly triples the cost.
-				int scale = crop.height > 0 && crop.height < 64 ? 2 : 1;
-				wxImage img = FitToMax(BuildImage(crop, scale), 1600);
-				if (!img.IsOk())
-					return;
-				temp = wxFileName::CreateTempFileName("aegisub-hardsub-");
-				if (temp.empty() || !img.SaveFile(temp, wxBITMAP_TYPE_PNG))
-					return;
-				handler->scan_encode_ms_.fetch_add(ElapsedMs(encode_begin));
-				ocr::OCRResult tmp;
-				auto const ocr_begin = std::chrono::steady_clock::now();
-				bool const ok = RunBackend(rec_backend, agi::fs::path(std::wstring(temp.wc_str())),
-				                           ocr_options, ocr::OcrMode::Full, cancel, tmp);
-				handler->scan_ocr_ms_.fetch_add(ElapsedMs(ocr_begin));
-				if (!ok)
-					return;
-				out = std::move(tmp);
-			});
-			if (code)
-				return ocr::OCRResult();
-			return out;
-		};
+		// One full-pipeline engine for both detection (client-side read-only
+		// boxes) and recognition, so the OCR response shape is always the
+		// well-tested full-pipeline format.
+		auto backend = WaitForOcrEngine(handler->ocr_full_state_, 10000);
+		auto detect = hardsub::MakeOcrDetector(backend, ocr_options, cancel, profile.get());
+		auto recognize = hardsub::MakeOcrRecognizer(backend, ocr_options, cancel, profile.get());
 
 		auto last_post = std::chrono::steady_clock::now();
 		auto clock_start = last_post;
-		auto progress = [handler, &last_post, &clock_start](int done, int total) {
+		auto progress = [handler, &last_post, &clock_start, profile](
+			hardsub::ScanPhase phase, int done, int total) {
 			auto now = std::chrono::steady_clock::now();
 			if (now - last_post < std::chrono::milliseconds(250))
 				return;
 			last_post = now;
-			auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - clock_start).count();
+			auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+				now - clock_start).count();
+			HardSubScanVideoProgress p;
+			p.phase = phase;
+			p.done = done;
+			p.total = total;
+			p.ocr_samples = profile->ocr_detect_calls;
+			p.ocr_ms = profile->OcrMs();
+			p.image_ms = profile->ms_ocr_image;
+			p.elapsed_ms = elapsed;
 			handler->AddPendingEvent(ValueEvent<HardSubScanVideoProgress>(
-				EVT_HARDSUB_SCANV_PROGRESS, -1,
-				HardSubScanVideoProgress{done, total,
-					handler->scan_ocr_samples_.load(), elapsed}));
+				EVT_HARDSUB_SCANV_PROGRESS, -1, p));
 		};
 		auto row_cb = [handler](hardsub::TimelineRowEvent const& ev) {
 			handler->AddPendingEvent(ValueEvent<hardsub::TimelineRowEvent>(
@@ -810,6 +690,10 @@ void DialogHardSubScanVideo::OnScan(wxCommandEvent&) {
 			else {
 				outcome.ok = true;
 				outcome.events = std::move(result.events);
+				outcome.profile = result.profile;
+				outcome.decoder_frames = decoder->GetStats().frames;
+				outcome.decoder_ms = decoder->GetStats().MsDecode();
+				outcome.copy_ms = decoder->GetStats().MsCopy();
 			}
 		}
 		catch (std::exception const& e) {
@@ -827,15 +711,27 @@ void DialogHardSubScanVideo::OnScan(wxCommandEvent&) {
 
 void DialogHardSubScanVideo::OnScanProgress(ValueEvent<HardSubScanVideoProgress>& event) {
 	auto const& p = event.Get();
-	if (p.total <= 0)
-		return;
-	int percent = std::min(1000, p.done * 1000 / p.total);
+
+	// The frame pass and the per-row pass differ a lot in duration; each maps
+	// onto its own slice of the bar. Reporting only the frame pass used to
+	// leave the bar at 100% while a third of the work was still running.
+	double start = 0.0;
+	double share = 0.0;
+	switch (p.phase) {
+	case hardsub::ScanPhase::Main: start = 0.0; share = 0.62; break;
+	case hardsub::ScanPhase::Rows: start = 0.62; share = 0.32; break;
+	case hardsub::ScanPhase::Finalize: start = 0.94; share = 0.06; break;
+	}
+	double const within = p.total > 0
+		? std::min(1.0, static_cast<double>(p.done) / p.total)
+		: 0.0;
+	int const percent = std::min(1000, static_cast<int>((start + share * within) * 1000.0));
 	progress->SetValue(percent);
 
-	long long elapsed = p.elapsed_ms;
+	long long const elapsed = p.elapsed_ms;
 	long long eta = 0;
-	if (p.done > 0)
-		eta = elapsed * static_cast<long long>(p.total - p.done) / p.done;
+	if (percent > 0)
+		eta = elapsed * (1000 - percent) / percent;
 	auto fmt = [](long long ms) {
 		long long s = ms / 1000;
 		return wxString::Format(_("%lld:%02lld:%02lld"), s / 3600, (s % 3600) / 60, s % 60);
@@ -844,12 +740,33 @@ void DialogHardSubScanVideo::OnScanProgress(ValueEvent<HardSubScanVideoProgress>
 	// convert to a character pointer in a C varargs call, so %s would treat the
 	// wxString object's bytes as a pointer and dereference garbage (crash).
 	// Concatenate the string pieces instead.
-	wxString status = wxString::Format(_("Frame %d / %d (%d%%)  |  elapsed "),
-		p.done, p.total, percent / 10);
+	wxString status;
+	switch (p.phase) {
+	case hardsub::ScanPhase::Main:
+		status = wxString::Format(_("Frame %d / %d (%d%%)  |  elapsed "),
+			p.done, p.total, percent / 10);
+		break;
+	case hardsub::ScanPhase::Rows:
+		status = wxString::Format(_("Row %d / %d (%d%%)  |  elapsed "),
+			p.done, p.total, percent / 10);
+		break;
+	case hardsub::ScanPhase::Finalize:
+		status = wxString::Format(_("Finishing (%d%%)  |  elapsed "), percent / 10);
+		break;
+	}
 	status += fmt(elapsed);
 	status += wxString(_("  |  ETA "));
 	status += fmt(eta);
 	status += wxString::Format(_("  |  OCR %d"), p.ocr_samples);
+	if (p.ocr_ms > 0) {
+		status += wxString(" (");
+		status += wxString::Format("%.1f s", p.ocr_ms / 1000.0);
+		if (p.image_ms > 0) {
+			status += wxString(" + ");
+			status += wxString::Format("%.1f s", p.image_ms / 1000.0);
+		}
+		status += wxString(")");
+	}
 	SetStatus(status);
 }
 
@@ -877,15 +794,31 @@ void DialogHardSubScanVideo::OnScanDone(ValueEvent<HardSubScanVideoOutcome>& eve
 	else if (outcome.ok) {
 		events_ = std::move(outcome.events);
 		PopulateResults();
-		int const samples = scan_ocr_samples_.load();
-		long long const ocr_ms = scan_ocr_ms_.load();
-		long long const encode_ms = scan_encode_ms_.load();
-		LOG_I("hardsub/scan/ocr") << samples << " samples, " << ocr_ms << " ms in the engine, "
-			<< encode_ms << " ms encoding the crops";
-		if (samples > 0) {
+
+		auto const& prof = outcome.profile;
+		long long const ocr_ms = prof.OcrMs();
+		long long const total_ms = std::max<long long>(
+			1, prof.ms_decode + prof.ms_region + prof.ms_change + ocr_ms + prof.ms_ocr_image + prof.ms_boundary);
+		auto pct = [total_ms](long long ms) {
+			return static_cast<int>(100.0 * ms / total_ms);
+		};
+		LOG_I("hardsub/scan") << prof.frames << " frames, " << prof.rows << " rows, "
+			<< prof.boundary_frames << " boundary frames: decode " << prof.ms_decode
+			<< " ms (ffms " << outcome.decoder_ms << " + copy " << outcome.copy_ms
+			<< "), region " << prof.ms_region << " ms, change " << prof.ms_change
+			<< " ms, boundary " << prof.ms_boundary << " ms, OCR engine " << ocr_ms
+			<< " ms (" << prof.ocr_detect_calls << " detect, "
+			<< prof.ocr_recognize_calls << " recognize), OCR image " << prof.ms_ocr_image
+			<< " ms";
+		if (prof.ocr_detect_calls > 0) {
 			SetStatus(wxString::Format(
-				_("Scan complete: %d lines detected (OCR %d samples, %.1f s)."),
-				static_cast<int>(events_.size()), samples, ocr_ms / 1000.0));
+				           _("Scan complete: %d lines detected (OCR %d samples, %.1f s)."),
+				           static_cast<int>(events_.size()), prof.ocr_detect_calls, ocr_ms / 1000.0)
+				+ wxString::Format("  |  decode %d%%  pixels %d%%  OCR %d%%  rows %d%%",
+				                   pct(prof.ms_decode),
+				                   pct(prof.ms_region + prof.ms_change),
+				                   pct(ocr_ms + prof.ms_ocr_image),
+				                   pct(prof.ms_boundary)));
 		}
 		else {
 			SetStatus(wxString::Format(_("Scan complete: %d lines detected."),

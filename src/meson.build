@@ -116,6 +116,8 @@ aegisub_src = files(
     'gl_wrap.cpp',
     'grid_column.cpp',
     'help_button.cpp',
+    'hardsub_bench.cpp',
+    'hardsub_ocr_runner.cpp',
     'hardsub_region_tool.cpp',
     'hardsub_scan.cpp',
     'hardsub_timeline_scan.cpp',

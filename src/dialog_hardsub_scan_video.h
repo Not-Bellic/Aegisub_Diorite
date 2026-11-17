@@ -47,9 +47,15 @@ namespace agi { struct Context; }
 namespace ocr { struct OCROptions; }
 
 struct HardSubScanVideoProgress {
+	hardsub::ScanPhase phase = hardsub::ScanPhase::Main;
 	int done = 0;
 	int total = 0;
 	int ocr_samples = 0;
+	/// Time inside the OCR engine and inside the image encode that feeds it,
+	/// summed over the samples of the current scan. Their ratio is what tells
+	/// a "the scan is still slow" report apart from "OCR is the slow part".
+	long long ocr_ms = 0;
+	long long image_ms = 0;
 	long long elapsed_ms = 0;
 };
 
@@ -58,6 +64,13 @@ struct HardSubScanVideoOutcome {
 	bool cancelled = false;
 	std::string error;
 	std::vector<hardsub::TimelineRowEvent> events;
+	/// Per-phase timing of the scan that produced `events`.
+	hardsub::ScanProfile profile;
+	/// The scan decoder's own split of `profile.ms_decode`: FFMS decode and the
+	/// copy into the scan buffer (0/0 when the fallback provider loader ran).
+	int decoder_frames = 0;
+	long long decoder_ms = 0;
+	long long copy_ms = 0;
 };
 
 /// Modeless dialog for scanning an entire video for burned-in subtitles inside a
@@ -97,12 +110,6 @@ class DialogHardSubScanVideo final : public wxDialog {
 	bool updating_region_spins_ = false;
 	bool scanning_ = false;
 	std::atomic<bool> cancel_scan_{false};
-	std::atomic<int> scan_ocr_samples_{0};
-	/// Time spent inside the OCR engine and inside the PNG encode that feeds it,
-	/// summed over the samples of the current scan. Their ratio is what tells a
-	/// "the scan is still slow" report apart from "OCR is the slow part".
-	std::atomic<long long> scan_ocr_ms_{0};
-	std::atomic<long long> scan_encode_ms_{0};
 	std::thread scan_thread_;
 	std::shared_ptr<OcrWarmState> ocr_full_state_;
 	std::vector<hardsub::TimelineRowEvent> events_;

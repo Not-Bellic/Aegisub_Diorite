@@ -209,7 +209,7 @@ bool AegisubApp::OnInit() {
 	try {
 		if (!config::opt)
 			config::opt = new agi::Options(config::path->Decode("?user/config.json"), GET_DEFAULT_CONFIG(default_config));
-		boost::interprocess::ibufferstream stream((const char *)default_config_platform, sizeof(default_config_platform));
+		boost::interprocess::ibufferstream stream((const char *)default_config_platform, default_config_platform_size);
 		config::opt->ConfigNext(stream);
 	} catch (agi::Exception& e) {
 		LOG_E("config/init") << "Caught exception: " << e.GetMessage();

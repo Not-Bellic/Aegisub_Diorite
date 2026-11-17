@@ -30,4 +30,7 @@ wxIcon libresrc_geticon(const unsigned char *image, size_t size);
 #define GETIMAGEDIR(a, s, d) libresrc_getimage(#a, a, sizeof(a), s, d)
 #define GETICON(a) libresrc_geticon(a, sizeof(a))
 
-#define GET_DEFAULT_CONFIG(a) std::make_pair(reinterpret_cast<const char *>(a), sizeof(a))
+// The generated resources expose a matching <name>_size symbol on purpose: a
+// translation unit compiled against an older generated header would otherwise
+// pass a stale sizeof() and read the resource truncated.
+#define GET_DEFAULT_CONFIG(a) std::make_pair(reinterpret_cast<const char *>(a), a##_size)

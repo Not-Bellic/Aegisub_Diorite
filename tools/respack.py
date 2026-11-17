@@ -43,6 +43,7 @@ used_names = set()
 with open(cppfile, 'w') as cpp:
     cpp.write('#include "libresrc.h"\n')
     with open(hfile, 'w') as h:
+        h.write('#include <stddef.h>\n')
 
         for k in files:
             with open(files[k], 'rb') as f:
@@ -58,6 +59,14 @@ with open(cppfile, 'w') as cpp:
 
             cpp.write('const unsigned char {}[] = {{{}}};\n'.format(name, datastr))
             h.write('extern const unsigned char {}[{}];\n'.format(name, len(data)))
+
+            # Emit the size as a symbol rather than relying on sizeof() of the
+            # extern declaration at each use site. A translation unit compiled
+            # before this resource was regenerated would otherwise pass a stale
+            # size and read the blob truncated, which breaks JSON parsing.
+            if not generate_bitmap_table:
+                cpp.write('const size_t {}_size = sizeof({});\n'.format(name, name))
+                h.write('extern const size_t {}_size;\n'.format(name))
 
         if generate_bitmap_table:
             h.write('struct libresrc_bitmap { const char *name; const char *path; const unsigned char *data; size_t size; };\n')

@@ -26,8 +26,8 @@
 #include "include/aegisub/context.h"
 #include "libresrc/libresrc.h"
 #include "localization/localization_matcher.h"
-#include "ocr/ocr_engine.h"
-#include "ocr/ocr_process.h"
+#include "ocr/ocr_backend.h"
+#include "ocr/ocr_warmup.h"
 #include "options.h"
 #include "persist_location.h"
 #include "project.h"
@@ -68,20 +68,6 @@
 #include <wx/statbox.h>
 #include <wx/stattext.h>
 #include <wx/textctrl.h>
-
-/// Shared state for a background-pre-warmed OCR engine. The warmup task
-/// captures a copy of the shared_ptr, so it never touches the dialog after
-/// destruction and the dialog never joins it.
-/// Defined at global scope to match the forward declaration in the header.
-struct OcrWarmState {
-	std::mutex mutex;
-	std::shared_ptr<ocr::OCRProcess> process;
-	std::atomic<bool> ready{false};
-	/// Pipeline switches used to start the engine: detection-only for the
-	/// boundary confirmation, full pipeline for recognition and the strict
-	/// scan text check.
-	ocr::OCRProcessConfig config{true, false, false};
-};
 
 namespace {
 
@@ -545,8 +531,8 @@ DialogHardSubScan::~DialogHardSubScan() {
 	if (ocr_warm_state_) {
 		{
 			std::lock_guard<std::mutex> lock(ocr_warm_state_->mutex);
-			if (ocr_warm_state_->process)
-				ocr_warm_state_->process->Stop();
+			if (ocr_warm_state_->backend)
+				ocr_warm_state_->backend->Stop();
 		}
 		// The warmup task keeps the state alive if it is still starting; it
 		// will finish on its own and release the engine.
@@ -558,8 +544,8 @@ DialogHardSubScan::~DialogHardSubScan() {
 		{
 			std::lock_guard<std::mutex> run_lock(ocr_full_run_mutex_);
 			std::lock_guard<std::mutex> lock(ocr_full_state_->mutex);
-			if (ocr_full_state_->process)
-				ocr_full_state_->process->Stop();
+			if (ocr_full_state_->backend)
+				ocr_full_state_->backend->Stop();
 		}
 		// The warmup task keeps the state alive if it is still starting; it
 		// will finish on its own and release the engine.
@@ -991,55 +977,43 @@ void DialogHardSubScan::OnRecognizeDone(ValueEvent<HardSubRecognizeOutcome>& eve
 	UpdateControls();
 }
 
-std::shared_ptr<ocr::OCRProcess> DialogHardSubScan::GetFullOcrProcess(std::string& diagnostic) {
+std::shared_ptr<ocr::OcrBackend> DialogHardSubScan::GetFullOcrBackend(std::string& diagnostic) {
 	diagnostic.clear();
 	auto state = ocr_full_state_;
 	if (!state) {
 		diagnostic = from_wx(_("OCR runtime is unavailable."));
 		return {};
 	}
-	try {
-		std::lock_guard<std::mutex> lock(state->mutex);
-		if (state->process && state->process->IsRunning())
-			return state->process;
 
-		// The engine was never warmed or was stopped (a cancelled request or
-		// a timeout); (re)start it. This blocks for the model load, so callers
-		// should only do it off the UI thread.
-		state->ready = false;
-		auto process = std::make_shared<ocr::OCRProcess>();
-		agi::fs::path executable, models_dir, config_path;
-		if (!ocr::OCRProcess::FindRuntime(executable, models_dir, config_path, diagnostic)
-		    || !process->Start(executable, models_dir, config_path, diagnostic, state->config))
-			return {};
-		state->process = std::move(process);
-		state->ready = true;
-		return state->process;
-	}
-	catch (...) {
-		diagnostic = from_wx(_("OCR runtime failed to start."));
-		return {};
-	}
+	// The engine is warmed in the background at dialog open; RunFullOcr waits
+	// for that attempt before calling this, so a missing engine here means the
+	// warm-up failed and left its reason behind.
+	if (auto backend = WaitForOcrEngine(state, 0))
+		return backend;
+
+	diagnostic = OcrWarmDiagnostic(state);
+	if (diagnostic.empty())
+		diagnostic = from_wx(_("OCR runtime is unavailable."));
+	return {};
 }
 
 ocr::OCRResult DialogHardSubScan::RunFullOcr(agi::fs::path const& image_path,
                                              ocr::OCROptions const& options,
                                              std::function<bool()> const& cancel) {
-	// OCRProcess is not thread-safe: the region recognition task and the scan
+	// Wait for the pre-warmed engine before taking the run lock: the dialog
+	// destructor takes that lock to stop the engine, and it must not block
+	// behind a slow model load. Waiting here also keeps a second engine from
+	// being started concurrently with the warm-up.
+	WaitForOcrEngine(ocr_full_state_, 15000);
+
+	// An OcrBackend is not thread-safe: the region recognition task and the scan
 	// thread both use the shared engine, so every request is serialized.
 	std::lock_guard<std::mutex> lock(ocr_full_run_mutex_);
 	std::string diagnostic;
-	auto process = GetFullOcrProcess(diagnostic);
-	if (process)
-		return process->RunImage(image_path, options, false, cancel);
+	auto backend = GetFullOcrBackend(diagnostic);
+	if (backend)
+		return backend->Run(image_path, options, ocr::OcrMode::Full, cancel);
 
-	// The persistent runtime is only bundled on Windows builds; keep one-shot
-	// OCR working on other platforms.
-	if (diagnostic.find("only available on Windows") != std::string::npos) {
-		ocr::OCREngine engine;
-		if (engine.GetDiagnostic(options).empty())
-			return engine.RecognizeImage(image_path, options);
-	}
 	ocr::OCRResult result;
 	result.diagnostic = diagnostic;
 	return result;
@@ -1092,16 +1066,15 @@ void DialogHardSubScan::OnScan(wxCommandEvent&) {
 		strict_ocr = false;
 	std::vector<int> keyframes = c->project->VideoProvider()->GetKeyFrames();
 
-	ocr::OCREngine engine;
 	ocr::OCROptions ocr_options;
 	ocr_options.keep_line_breaks = true;
 	ocr_options.language = LanguageOption();
 	ocr_options.use_angle_cls = false;
 	ocr_options.det_limit_side_len = DetectLimitOption();
-	if (confirm_with_ocr && !engine.GetDetectionDiagnostic(ocr_options).empty())
-		confirm_with_ocr = false;
-	if (strict_ocr && !engine.GetDiagnostic(ocr_options).empty())
-		strict_ocr = false;
+	// Without a usable engine the OCR-assisted passes are skipped and the pixel
+	// scan still produces a timeline.
+	if (!ocr::IsAvailable())
+		confirm_with_ocr = strict_ocr = false;
 
 	cancel_scan_ = false;
 	scanning_ = true;
@@ -1189,37 +1162,25 @@ void DialogHardSubScan::OnScan(wxCommandEvent&) {
 					: outcome.result.error;
 			}
 			else {
-				// The pre-warmed detection-only engine: it has been loading
-				// since the dialog opened; wait briefly for it (the pixel
-				// scan above already gave it time), then proceed without OCR
-				// if it is still not ready so the scan stays fast.
-				std::shared_ptr<ocr::OCRProcess> detect_process;
-				{
-					auto state = handler->ocr_warm_state_;
-					if (state) {
-						for (int i = 0; i < 15 && !cancel(); ++i) {
-							if (state->ready.load())
-								break;
-							std::this_thread::sleep_for(std::chrono::milliseconds(100));
-						}
-						if (state->ready.load()) {
-							std::lock_guard<std::mutex> lock(state->mutex);
-							detect_process = state->process;
-						}
-					}
-				}
+				// The pre-warmed detection-only engine has been loading since
+				// the dialog opened; the pixel scan above already gave it time,
+				// so only a pathological load waits here. Proceed without OCR
+				// when it is not ready, to keep the scan fast.
+				std::shared_ptr<ocr::OcrBackend> detect_backend;
+				if (confirm_with_ocr && !strict_ocr)
+					detect_backend = WaitForOcrEngine(handler->ocr_warm_state_, 5000);
 
 				FrameDetector detect;
 				FrameDetector recognize;
-				if (confirm_with_ocr && !strict_ocr && detect_process) {
-					detect = [&detect_process, &ocr_options, &cancel](agi::fs::path const& image_path) {
-						return detect_process->RunImage(image_path, ocr_options, true, cancel);
+				if (detect_backend) {
+					detect = [&detect_backend, &ocr_options, &cancel](agi::fs::path const& image_path) {
+						return detect_backend->Run(image_path, ocr_options, ocr::OcrMode::DetectOnly, cancel);
 					};
 				}
 				if (strict_ocr) {
 					// The strict text check shares the dialog's full-pipeline
-					// engine (warmed at open, restarted on demand), so it no
-					// longer waits for a per-scan model load.
+					// engine (warmed at open), so it does not wait for a
+					// per-scan model load.
 					recognize = [handler, &ocr_options, &cancel](agi::fs::path const& image_path) {
 						return handler->RunFullOcr(image_path, ocr_options, cancel);
 					};
@@ -1492,37 +1453,10 @@ void DialogHardSubScan::CancelScan() {
 }
 
 void DialogHardSubScan::StartOcrWarmup() {
-	// Start both engines on the background dispatcher so model loading (a few
-	// seconds) happens while the user selects the region and edits the text,
-	// not on the recognition or scan critical path. The task captures the
-	// shared state by value, never the dialog, so it is safe to close the
-	// dialog while an engine is still loading; dispatch also routes any
-	// exception to the crash handler instead of terminating the process.
-	auto start_one = [](std::shared_ptr<OcrWarmState> state) {
-		if (!state)
-			return;
-		agi::dispatch::Background().Async([state] {
-			try {
-				auto process = std::make_shared<ocr::OCRProcess>();
-				agi::fs::path executable, models_dir, config_path;
-				std::string diagnostic;
-				if (ocr::OCRProcess::FindRuntime(executable, models_dir, config_path, diagnostic)
-				    && process->Start(executable, models_dir, config_path, diagnostic,
-				                      state->config)) {
-					std::lock_guard<std::mutex> lock(state->mutex);
-					if (!state->process || !state->process->IsRunning())
-						state->process = std::move(process);
-					else
-						process->Stop(); // a caller already started the engine
-					state->ready = true;
-				}
-			}
-			catch (...) {
-				// OCR startup failure must never crash the app.
-			}
-		});
-	};
-
-	start_one(ocr_warm_state_); // detection-only: boundary confirmation
-	start_one(ocr_full_state_); // full pipeline: recognition + strict check
+	// Both engines start on the background dispatcher so model loading happens
+	// while the user selects the region and edits the text, not on the
+	// recognition or scan critical path. The state is shared with the dialog
+	// rather than captured from it, so closing the dialog mid-load is safe.
+	::StartOcrWarmup(ocr_warm_state_); // detection-only: boundary confirmation
+	::StartOcrWarmup(ocr_full_state_); // full pipeline: recognition + strict check
 }

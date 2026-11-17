@@ -16,6 +16,7 @@
 
 #include "../../options.h"
 
+#include <libaegisub/fs.h>
 #include <libaegisub/path.h>
 
 #include <cstdlib>
@@ -111,6 +112,27 @@ agi::fs::path AssetDir() {
 	catch (...) {
 		return {};
 	}
+}
+
+bool AssetsPresent(std::string &diagnostic) {
+	agi::fs::path const directory = AssetDir();
+	if (directory.empty()) {
+		diagnostic = "The ONNX OCR runtime directory could not be resolved.";
+		return false;
+	}
+
+	for (char const *name : { "onnxruntime.dll", "ppocrv6_small_det.onnx",
+	                          "ppocrv6_small_rec.onnx", "ppocrv6_dict.txt" }) {
+		agi::fs::path const file = directory / name;
+		if (!agi::fs::FileExists(file)) {
+			diagnostic = "The ONNX OCR runtime is incomplete: " + file.string() +
+				" is missing. Reinstall Aegisub or select the OCR option to restore it.";
+			return false;
+		}
+	}
+
+	diagnostic.clear();
+	return true;
 }
 
 OrtApi const *Api(std::string &diagnostic) {

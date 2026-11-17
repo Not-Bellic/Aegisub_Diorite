@@ -22,7 +22,7 @@
 #include "include/aegisub/context.h"
 #include "libresrc/libresrc.h"
 #include "options.h"
-#include "ocr/ocr_engine.h"
+#include "ocr/ocr_backend.h"
 #include "persist_location.h"
 #include "project.h"
 #include "selection_controller.h"
@@ -515,7 +515,6 @@ void OCRPreviewPanel::OnPaint(wxPaintEvent&) {
 struct DialogOCR::Impl {
 	DialogOCR *dialog;
 	agi::Context *c;
-	ocr::OCREngine engine;
 	std::unique_ptr<PersistLocation> persist;
 
 	wxRadioButton *source_frame = nullptr;
@@ -746,7 +745,7 @@ void DialogOCR::Impl::OnRecognize(wxCommandEvent&) {
 	SaveOptions();
 
 	ocr::OCROptions options = CurrentOptions();
-	auto diagnostic = engine.GetDiagnostic(options);
+	auto diagnostic = to_wx(ocr::AvailabilityDiagnostic());
 	if (!diagnostic.empty()) {
 		wxMessageBox(diagnostic, _("OCR runtime unavailable"), wxOK | wxICON_ERROR | wxCENTER, dialog);
 		return;
@@ -769,13 +768,12 @@ void DialogOCR::Impl::OnRecognize(wxCommandEvent&) {
 	result_text->Clear();
 	SetRunning(true);
 
-	auto engine_copy = engine;
 	auto handler = dialog;
-	agi::dispatch::Background().Async([handler, engine_copy, image_path, options, temporary_image]{
+	agi::dispatch::Background().Async([handler, image_path, options, temporary_image]{
 		OCRThreadResult thread_result;
 		thread_result.image_path = image_path;
 		thread_result.temporary_image = temporary_image;
-		thread_result.result = engine_copy.RecognizeImage(image_path, options);
+		thread_result.result = ocr::RunShared(image_path, options);
 		handler->AddPendingEvent(ValueEvent<OCRThreadResult>(EVT_OCR_COMPLETE, -1, std::move(thread_result)));
 	});
 }
@@ -896,7 +894,7 @@ DialogOCR::~DialogOCR() {
 }
 
 void ShowOCRDialog(agi::Context *c) {
-	auto diagnostic = ocr::OCREngine::GetRuntimeDiagnostic();
+	auto diagnostic = to_wx(ocr::AvailabilityDiagnostic());
 	if (!diagnostic.empty()) {
 		wxMessageBox(diagnostic, _("OCR runtime unavailable"), wxOK | wxICON_ERROR | wxCENTER, c->parent);
 		return;

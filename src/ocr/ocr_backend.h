@@ -69,4 +69,48 @@ std::unique_ptr<OcrBackend> MakePaddleBackend(OCRProcessConfig const& config);
 /// keeps the feature disabled.
 std::unique_ptr<OcrBackend> MakeOnnxBackend();
 
+/// Which engine to use, from the `Tool/OCR/Backend` option.
+enum class OcrBackendKind {
+	/// ONNX Runtime when it can start, otherwise the bundled Paddle runtime.
+	Auto,
+	/// The in-process ONNX Runtime engine only.
+	Onnx,
+	/// The bundled PaddleOCR-json runtime only.
+	Paddle,
+};
+
+/// The configured engine kind. `Auto` when the option is unset or holds an
+/// unknown value (including before the options are loaded).
+OcrBackendKind ConfiguredBackendKind();
+
+/// Stable lower-case name of `kind` (`auto`, `onnx`, `paddle`), for the option
+/// value and log lines.
+char const *BackendKindId(OcrBackendKind kind);
+
+/// Parse `auto`, `onnx` or `paddle`, case-insensitively. Returns false and
+/// leaves `out` untouched when the text is not one of them.
+bool ParseBackendKind(std::string const& text, OcrBackendKind& out);
+
+/// Create an engine of `kind`. Never returns nullptr; Start() reports a missing
+/// or broken runtime through its diagnostic. In `Auto` mode the Paddle engine
+/// is started only after the ONNX one failed, and the reason is logged.
+std::unique_ptr<OcrBackend> MakeBackend(OcrBackendKind kind, OCRProcessConfig const& config);
+
+/// True when the configured engine looks installed. Only checks the runtime
+/// files (no DLL load, no model load), so it is cheap enough for menu
+/// validators, which run on every menu update.
+bool IsAvailable();
+
+/// Why the configured engine is unavailable, or empty when it is. Combines the
+/// ONNX and Paddle reasons in `Auto` mode.
+std::string AvailabilityDiagnostic();
+
+/// Run one image on a process-wide engine shared by the single-image features
+/// (Image2Text and the OCR dialog). The engine is started on first use and kept
+/// loaded for the rest of the session, so repeated recognitions do not pay the
+/// model load again; calls are serialized. Never throws: a failure comes back
+/// in the result's diagnostic.
+OCRResult RunShared(agi::fs::path const& image_path, OCROptions const& options,
+                    OcrMode mode = OcrMode::Full);
+
 } // namespace ocr

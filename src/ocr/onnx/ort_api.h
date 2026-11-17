@@ -28,6 +28,11 @@ namespace onnx {
 /// (unit tests and diagnostics).
 agi::fs::path AssetDir();
 
+/// True when the runtime DLL, both models and the dictionary are present.
+/// Only stats the files: nothing is loaded, so this is safe to call from a menu
+/// validator. Fills `diagnostic` with the reason when they are missing.
+bool AssetsPresent(std::string &diagnostic);
+
 /// Load onnxruntime.dll once and return its API table. Returns nullptr and
 /// fills `diagnostic` when the runtime is missing or too old. Thread-safe.
 OrtApi const *Api(std::string &diagnostic);

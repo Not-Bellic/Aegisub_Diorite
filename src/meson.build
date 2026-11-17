@@ -140,13 +140,14 @@ aegisub_src = files(
     'motion_tracking/motion_track_optimizer.cpp',
     'motion_tracking/motion_track_apply.cpp',
     'motion_tracking/motion_track_commit.cpp',
+    'ocr/backend_factory.cpp',
     'ocr/ocr_engine.cpp',
     'ocr/ocr_process.cpp',
+    'ocr/ocr_selftest.cpp',
+    'ocr/ocr_warmup.cpp',
     'ocr/paddle_backend.cpp',
-    'ocr/onnx/ctc_decode.cpp',
-    'ocr/onnx/det_postprocess.cpp',
-    'ocr/onnx/onnx_backend.cpp',
-    'ocr/onnx/ort_api.cpp',
+    # The ONNX Runtime engine (ocr/onnx/*) is built as the separate `onnxocr`
+    # static library, so its vendor headers stay off every other command line.
     'pen.cpp',
     'perspective_geometry.cpp',
     'persist_location.cpp',

@@ -45,7 +45,7 @@
 #include "../include/aegisub/subtitles_provider.h"
 #include "../libresrc/libresrc.h"
 #include "../options.h"
-#include "../ocr/ocr_engine.h"
+#include "../ocr/ocr_backend.h"
 #include "../project.h"
 #include "../selection_controller.h"
 #include "../utils.h"
@@ -127,7 +127,7 @@ struct validator_video_attached : public Command {
 
 struct validator_video_attached_ocr : public validator_video_attached {
 	bool Validate(const agi::Context *c) override {
-		return validator_video_attached::Validate(c) && ocr::OCREngine::IsRuntimeAvailable();
+		return validator_video_attached::Validate(c) && ocr::IsAvailable();
 	}
 };
 

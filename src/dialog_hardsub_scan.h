@@ -15,6 +15,7 @@
 #pragma once
 
 #include "hardsub_scan.h"
+#include "ocr/ocr_warmup.h"
 #include "value_event.h"
 
 #include <libaegisub/fs_fwd.h>
@@ -37,9 +38,8 @@ class wxSpinCtrl;
 class wxStaticText;
 class wxTextCtrl;
 class PersistLocation;
-struct OcrWarmState;
 namespace agi { struct Context; }
-namespace ocr { struct OCROptions; struct OCRResult; class OCRProcess; }
+namespace ocr { struct OCROptions; struct OCRResult; }
 
 struct HardSubRecognizeOutcome {
 	bool ok = false;
@@ -111,7 +111,7 @@ class DialogHardSubScan final : public wxDialog {
 	/// both region recognition and the strict scan text check so the model
 	/// is loaded only once per dialog lifetime.
 	std::shared_ptr<OcrWarmState> ocr_full_state_;
-	/// Serializes requests to the shared full-pipeline engine. OCRProcess is
+	/// Serializes requests to the shared full-pipeline engine. An OcrBackend is
 	/// not thread-safe, and the region recognition task and the scan thread
 	/// both call into it.
 	std::mutex ocr_full_run_mutex_;
@@ -158,13 +158,12 @@ class DialogHardSubScan final : public wxDialog {
 	void OnScanPixelDone(ValueEvent<HardSubScanOutcome>& event);
 	void OnScanDone(ValueEvent<HardSubScanOutcome>& event);
 
-	/// Return the dialog's full-pipeline OCR engine, (re)starting it when it
-	/// is not running. Blocks while the model loads; fills diagnostic on
-	/// failure.
-	std::shared_ptr<ocr::OCRProcess> GetFullOcrProcess(std::string& diagnostic);
+	/// Return the dialog's full-pipeline OCR engine, waiting for the background
+	/// warm-up when it is still loading. Blocks while the model loads; fills
+	/// diagnostic on failure.
+	std::shared_ptr<ocr::OcrBackend> GetFullOcrBackend(std::string& diagnostic);
 	/// Run one image through the shared full-pipeline engine, serialized
-	/// against concurrent callers. Falls back to the one-shot engine on
-	/// platforms without the persistent runtime.
+	/// against concurrent callers.
 	ocr::OCRResult RunFullOcr(agi::fs::path const& image_path,
 	                          ocr::OCROptions const& options,
 	                          std::function<bool()> const& cancel);

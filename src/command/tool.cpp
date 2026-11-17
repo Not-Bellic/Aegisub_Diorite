@@ -41,7 +41,7 @@
 #include "../include/aegisub/context.h"
 #include "../libresrc/libresrc.h"
 #include "../options.h"
-#include "../ocr/ocr_engine.h"
+#include "../ocr/ocr_backend.h"
 #include "../project.h"
 #include "../resolution_resampler.h"
 #include "../video_controller.h"
@@ -139,7 +139,7 @@ struct tool_ocr_validator : public Command {
 	CMD_TYPE(COMMAND_VALIDATE)
 
 	bool Validate(const agi::Context *c) override {
-		return c->videoDisplay && c->project->VideoProvider() && ocr::OCREngine::IsRuntimeAvailable();
+		return c->videoDisplay && c->project->VideoProvider() && ocr::IsAvailable();
 	}
 };
 

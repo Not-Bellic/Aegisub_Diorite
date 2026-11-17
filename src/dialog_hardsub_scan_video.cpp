@@ -32,6 +32,7 @@
 #include "libresrc/libresrc.h"
 #include "ocr/ocr_backend.h"
 #include "ocr/ocr_process.h"
+#include "ocr/ocr_warmup.h"
 #include "options.h"
 #include "persist_location.h"
 #include "project.h"
@@ -75,16 +76,6 @@
 #include <wx/spinctrl.h>
 #include <wx/statbox.h>
 #include <wx/stattext.h>
-
-/// Shared state for a background-pre-warmed OCR engine (detection-only or full
-/// pipeline). Owned by the dialog via shared_ptr so a warmup task can safely
-/// outlive it without joining.
-struct OcrWarmState {
-	std::mutex mutex;
-	std::shared_ptr<ocr::OcrBackend> backend;
-	std::atomic<bool> ready{false};
-	ocr::OCRProcessConfig config{true, false, false};
-};
 
 namespace {
 
@@ -159,24 +150,6 @@ wxImage FitToMax(wxImage img, int max_side) {
 		                std::max(1, static_cast<int>(h * s)), wxIMAGE_QUALITY_BICUBIC);
 	}
 	return img;
-}
-
-/// Blocks until the pre-warmed OCR backend is ready (or `timeout_ms` elapses)
-/// and returns it. The scan thread must NOT start its own engine: the dialog
-/// already warms one at open, and starting a second concurrently (then stopping
-/// the half-loaded duplicate) is what can crash inside the process/pipe runtime.
-std::shared_ptr<ocr::OcrBackend> WaitForEngine(std::shared_ptr<OcrWarmState> const& state,
-                                               int timeout_ms) {
-	if (!state)
-		return {};
-	auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
-	while (!state->ready.load()) {
-		if (std::chrono::steady_clock::now() >= deadline)
-			return {};
-		std::this_thread::sleep_for(std::chrono::milliseconds(50));
-	}
-	std::lock_guard<std::mutex> lock(state->mutex);
-	return state->backend;
 }
 
 /// Calls `fn` under a SEH guard. Returns 0 on success, or the SEH exception code
@@ -724,7 +697,7 @@ void DialogHardSubScanVideo::OnScan(wxCommandEvent&) {
 		// Use a single full-pipeline engine for both detection (client-side
 		// read-only boxes) and recognition, so the OCR response shape is always
 		// the well-tested full-pipeline format.
-		rec_backend = WaitForEngine(handler->ocr_full_state_, 10000);
+		rec_backend = WaitForOcrEngine(handler->ocr_full_state_, 10000);
 		detect = [handler, rec_backend, ocr_options, cancel](hardsub::RegionImage const& crop) -> ocr::OCRResult {
 			ocr::OCRResult out;
 			int code = GuardSEH([&] {
@@ -1059,29 +1032,5 @@ void DialogHardSubScanVideo::StartOcrWarmup() {
 	// that the moment they click Scan the models are already loaded (a
 	// synchronous load at click time would otherwise block the scan for several
 	// seconds and leave the window looking frozen).
-	auto start_one = [](std::shared_ptr<OcrWarmState> state) {
-		if (!state)
-			return;
-		agi::dispatch::Background().Async([state] {
-			try {
-				auto backend = ocr::MakePaddleBackend(state->config);
-				std::string diagnostic;
-				bool started = backend && backend->Start(diagnostic);
-				{
-					std::lock_guard<std::mutex> lock(state->mutex);
-					if (started)
-						state->backend = std::shared_ptr<ocr::OcrBackend>(std::move(backend));
-				}
-				// Mark the attempt finished even on failure: waiting callers
-				// otherwise block for the full warm-up timeout when no OCR
-				// runtime is installed.
-				state->ready = true;
-			}
-			catch (...) {
-				// OCR startup failure must never crash the app.
-				state->ready = true;
-			}
-		});
-	};
-	start_one(ocr_full_state_); // full pipeline: recognition
+	::StartOcrWarmup(ocr_full_state_); // full pipeline: recognition
 }

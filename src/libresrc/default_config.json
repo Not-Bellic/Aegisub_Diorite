@@ -591,6 +591,7 @@
 			"Maximized" : false
 		},
 		"OCR" : {
+			"Backend" : "auto",
 			"Copy After OCR" : false,
 			"Detect Limit Side Len" : 0,
 			"Insert After OCR" : false,

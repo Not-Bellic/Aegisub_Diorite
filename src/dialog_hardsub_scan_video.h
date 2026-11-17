@@ -20,6 +20,7 @@
 #pragma once
 
 #include "hardsub_timeline_scan.h"
+#include "ocr/ocr_warmup.h"
 #include "value_event.h"
 
 #include <libaegisub/fs_fwd.h>
@@ -42,7 +43,6 @@ class wxSpinCtrl;
 class wxSpinEvent;
 class wxStaticText;
 class PersistLocation;
-struct OcrWarmState;
 namespace agi { struct Context; }
 namespace ocr { struct OCROptions; }
 

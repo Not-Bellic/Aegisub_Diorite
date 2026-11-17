@@ -22,6 +22,12 @@
 
 namespace ocr {
 
+/// One-shot PaddleOCR-json runner: spawns the bundled CLI for a single image.
+///
+/// This is the legacy runtime path. User-facing features go through
+/// OcrBackend (see ocr_backend.h) so they can use the in-process ONNX engine;
+/// the Paddle backend calls this class only as its fallback when the persistent
+/// pipe process is unavailable.
 class OCREngine {
 	agi::fs::path runtime_dir;
 	agi::fs::path executable;

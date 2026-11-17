@@ -45,7 +45,7 @@
 #include "include/aegisub/hotkey.h"
 #include "include/aegisub/menu.h"
 #include "options.h"
-#include "ocr/ocr_engine.h"
+#include "ocr/ocr_backend.h"
 #include "project.h"
 #include "retina_helper.h"
 #include "selection_controller.h"
@@ -1114,14 +1114,13 @@ void VideoDisplay::StartImage2Text(bool detect_only) {
 		return;
 	}
 
-	ocr::OCREngine engine;
 	ocr::OCROptions options;
 	options.keep_line_breaks = OPT_GET("Tool/OCR/Keep Line Breaks")->GetBool();
 	options.language = OPT_GET("Tool/OCR/Language")->GetString();
 	if (options.language.empty())
 		options.language = "japanese";
 
-	auto diagnostic = detect_only ? engine.GetDetectionDiagnostic(options) : engine.GetDiagnostic(options);
+	auto diagnostic = to_wx(ocr::AvailabilityDiagnostic());
 	if (!diagnostic.empty()) {
 		image2text_state = Image2TextState::Error;
 		image2text_error = "Image2Text: " + from_wx(diagnostic);
@@ -1189,11 +1188,12 @@ void VideoDisplay::StartImage2Text(bool detect_only) {
 	Render();
 
 	auto handler = this;
-	agi::dispatch::Background().Async([handler, engine, options, image_path, frame_number, detect_only] {
+	agi::dispatch::Background().Async([handler, options, image_path, frame_number, detect_only] {
 		Image2TextThreadResult thread_result;
 		thread_result.frame_number = frame_number;
 		thread_result.detect_only = detect_only;
-		thread_result.result = detect_only ? engine.DetectTextRegions(image_path, options) : engine.RecognizeImage(image_path, options);
+		thread_result.result = ocr::RunShared(
+			image_path, options, detect_only ? ocr::OcrMode::DetectOnly : ocr::OcrMode::Full);
 		try {
 			agi::fs::Remove(image_path);
 		}

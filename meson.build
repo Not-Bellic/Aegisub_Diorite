@@ -535,11 +535,30 @@ if host_machine.system() == 'windows'
     link_depends += manifest_file
 endif
 
+# The ONNX Runtime headers are an implementation detail of the OCR engine. They
+# go on this small static library's command line only: adding the vendor include
+# directory to the executable would put it on every translation unit and force a
+# full rebuild whenever the runtime is updated.
+onnxocr = static_library('onnxocr',
+                         files(
+                             'src/ocr/onnx/ctc_decode.cpp',
+                             'src/ocr/onnx/det_postprocess.cpp',
+                             'src/ocr/onnx/onnx_backend.cpp',
+                             'src/ocr/onnx/ort_api.cpp',
+                         ),
+                         include_directories: [libaegisub_inc, libresrc_inc, version_inc, deps_inc,
+                                               include_directories('src'),
+                                               include_directories('vendor/onnxruntime/include')],
+                         dependencies: deps,
+                         cpp_pch: aegisub_cpp_pch,
+                         c_pch: aegisub_c_pch,
+                         install: false)
+
 aegisub = executable('aegisub', aegisub_src, version_h, acconf, resrc,
-                     link_with: [libresrc, libluabins, libaegisub],
+                     link_with: [libresrc, libluabins, libaegisub, onnxocr],
                      link_args: link_args,
                      link_depends: link_depends,
-                     include_directories: [libaegisub_inc, libresrc_inc, version_inc, deps_inc, include_directories('src'), include_directories('vendor/onnxruntime/include')],
+                     include_directories: [libaegisub_inc, libresrc_inc, version_inc, deps_inc, include_directories('src')],
                      cpp_pch: aegisub_cpp_pch,
                      c_pch: aegisub_c_pch,
                      install: true,

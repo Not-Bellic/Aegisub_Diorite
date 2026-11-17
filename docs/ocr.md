@@ -49,6 +49,43 @@ The OCR dialog uses this folder next to `aegisub.exe`. If any required file is
 deleted, Aegisub reports the exact missing path and the files present in that
 folder.
 
+## OCR engines
+
+`Tool/OCR/Backend` in the config file selects the engine:
+
+- `auto` (default) uses the in-process ONNX Runtime engine and falls back to
+  PaddleOCR-json when that engine cannot start.
+- `onnx` uses only the in-process engine: `ocr/onnx/onnxruntime.dll`,
+  `ppocrv6_small_det.onnx`, `ppocrv6_small_rec.onnx` and `ppocrv6_dict.txt`.
+  See [ocr-onnx-models.md](ocr-onnx-models.md) for the model contract.
+- `paddle` uses only the bundled PaddleOCR-json sidecar described above.
+
+The ONNX engine runs in-process, so it avoids writing a PNG and starting a
+process for every frame, and it recognizes a 4K subtitle strip in tens of
+milliseconds instead of the ~0.4 s the sidecar needs. Both engines speak the
+same result contract, so the dialogs, the hard subtitle scan and Image2Text do
+not care which one is active.
+
+Image2Text and the OCR dialog keep their engine loaded for the rest of the
+session (a few hundred milliseconds to load, tens of milliseconds per
+recognition); the hard subtitle scan dialogs warm one engine per dialog and tear
+it down when the dialog closes.
+
+## OCR self-test
+
+The Windows smoke test and support diagnostics use a console mode:
+
+```text
+aegisub.exe --ocr-selftest frame.png --out report.json --backend onnx
+```
+
+It runs one image through the configured engine without opening a window and
+writes a JSON report (text, per-line confidence and boxes, engine start and
+recognition time, diagnostics). The exit code is 0 when text was recognized, 1
+when the image held no text, and 2 when the engine could not run. Point
+`AEGISUB_OCR_ASSETS` at an unpacked `ocr/onnx` folder to test assets that are
+not installed next to the executable.
+
 ## Hard subtitle scan
 
 `Video > Hard Subtitle Scan` selects a video region, recognizes its text, and

@@ -51,6 +51,7 @@
 #include "include/aegisub/context.h"
 #include "libresrc/libresrc.h"
 #include "options.h"
+#include "ocr/ocr_selftest.h"
 #include "mangetsu_renderer_offer.h"
 #include "include/aegisub/subtitles_provider.h"
 #include "project.h"
@@ -73,6 +74,8 @@
 #include <boost/interprocess/streams/bufferstream.hpp>
 #include <boost/locale.hpp>
 #include <locale>
+#include <string>
+#include <vector>
 #include <wx/clipbrd.h>
 #include <wx/msgdlg.h>
 #include <wx/stackwalk.h>
@@ -173,6 +176,25 @@ bool AegisubApp::OnInit() {
 	});
 
 	config::path = new agi::Path;
+
+	// `--ocr-selftest` is the console mode the packaging smoke test uses: it
+	// must not open a window or read the user configuration, and it reports
+	// through its exit code instead of the event loop.
+	{
+		auto const& cli = argv.GetArguments();
+		std::vector<std::string> cli_args;
+		cli_args.reserve(cli.size());
+		// cli[0] is the executable path, not an argument.
+		for (size_t i = 1; i < cli.size(); ++i)
+			cli_args.push_back(from_wx(cli[i]));
+		if (ocr::SelfTestRequested(cli_args)) {
+			// The OCR engine and the file helpers log; the real sink is created
+			// a few lines below, after this mode has already exited.
+			agi::log::log = new agi::log::LogSink;
+			ocr::RunSelfTest(cli_args); // does not return
+		}
+	}
+
 	crash_writer::Initialize(config::path->Decode("?user"));
 
 	agi::log::log = new agi::log::LogSink;

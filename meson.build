@@ -550,8 +550,12 @@ onnxocr = static_library('onnxocr',
                                                include_directories('src'),
                                                include_directories('vendor/onnxruntime/include')],
                          dependencies: deps,
+                         # C++-only target: pass cpp_pch alone. Asking for a C
+                         # precompiled header as well made Meson emit a C PCH
+                         # object that nothing consumes, and sccache could leave
+                         # it out of the cache, so lib.exe failed with LNK1181
+                         # on libonnxocr.a.p/meson_pch-c.obj.
                          cpp_pch: aegisub_cpp_pch,
-                         c_pch: aegisub_c_pch,
                          install: false)
 
 aegisub = executable('aegisub', aegisub_src, version_h, acconf, resrc,

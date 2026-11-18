@@ -68,6 +68,26 @@ double LumaChangedRatio(LumaImage const& a, LumaImage const& b, int threshold = 
 /// Coarse 8x8 luminance signature of a LumaImage, same role as RegionSignature.
 unsigned long long LumaSignature(LumaImage const& img);
 
+/// Copy a rectangle of a LumaImage. Returns an invalid image when the rectangle
+/// falls outside it.
+LumaImage CropLumaRegion(LumaImage const& src, int x, int y, int width, int height);
+
+/// Pixel indices (into tpl.data) of the template pixels that look like subtitle
+/// ink: their luminance deviates from the template's dominant background
+/// luminance by at least `deviation`. The luminance counterpart of
+/// TemplateTextPixels, for the scan's per-frame presence test.
+std::vector<int> TemplateTextPixelsLuma(LumaImage const& tpl, int deviation = 60);
+
+/// Fraction (0..1) of the template's text pixels whose luminance in `frame`,
+/// read at (x, y), is within `match_threshold` of the template. Returns 0 when
+/// the rectangle does not fit, the images are malformed or there are no text
+/// pixels. This is the online presence signal: one comparison per text pixel
+/// instead of a full-region conversion.
+double LumaTemplateCoverage(LumaImage const& frame, int x, int y,
+                            LumaImage const& tpl,
+                            std::vector<int> const& text_pixels,
+                            int match_threshold = 32);
+
 /// Copy the given rectangle of a video frame into an RGB RegionImage and resample
 /// it to `out_width` x `out_height` with a box (area average) filter.
 ///

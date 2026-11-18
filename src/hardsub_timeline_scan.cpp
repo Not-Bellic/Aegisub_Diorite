@@ -466,7 +466,13 @@ std::vector<TimelineRowEvent> DedupeTimelineEvents(std::vector<TimelineRowEvent>
 
 namespace {
 
+/// One on-screen subtitle, tracked from the frame OCR first reports it to the
+/// frame its template coverage drops. The boundaries come from that coverage
+/// series, so a row never costs a second decode pass: it is measured on frames
+/// the main scan already has in memory.
 struct RowTrack {
+	// Discovery: which visual band the row sits in and what its ink looks like,
+	// so later OCR samples can be matched to the same row.
 	int band = 0;
 	std::vector<unsigned char> signature;
 	int first_seen = -1;
@@ -476,6 +482,25 @@ struct RowTrack {
 	bool open = true;
 	bool center_ok = true;
 	TimelineRect region_rect;
+
+	// Presence tracking.
+	bool tracking = false;
+	LumaImage tpl;
+	std::vector<int> text_pixels;
+	int start = -1;
+	int last_present = -1;
+	int absent_run = 0;
+	bool start_clipped = false;
+
+	// Text and report geometry, filled when the row is first recognized.
+	std::string text;
+	double confidence = 0.0;
+	/// The first reading was short or unsure; re-read the middle of the run.
+	bool need_better_text = false;
+	TimelineRect scan_rect;    ///< padded template box, scan coordinates
+	TimelineRect rec_region;   ///< tight crop for recognition, region coordinates
+	TimelineRect row_region;   ///< reported box, region coordinates
+	TimelineRect row_video;    ///< reported box, video coordinates
 };
 
 } // namespace
@@ -535,6 +560,212 @@ TimelineScanResult ScanVideoTimeline(TimelineScanOptions const& opts,
 	int last_ocr = -(detect_every_max * 3);
 	bool has_ocr = false;
 
+	// The last few frames in scan coordinates, so a row discovered by an OCR
+	// sample can have its start measured backwards without asking the decoder
+	// for a frame it has already moved past. Large enough to cover the widest
+	// gap between two OCR samples plus the settle window.
+	constexpr int kRingSize = 48;
+	std::vector<LumaImage> ring(static_cast<size_t>(kRingSize));
+	std::vector<int> ring_frames(static_cast<size_t>(kRingSize), -1);
+	int ring_next = 0;
+	int ring_count = 0;
+
+	// Rows whose first reading was weak; re-read at the middle of the run after
+	// the frame pass, in ascending order, so the seeks stay forward.
+	std::vector<size_t> deferred;
+
+	// Keeps only the lines that clear the length-aware confidence bar, so a
+	// blank or garbage read never becomes a row's text.
+	auto keep_reading = [](ocr::OCRResult const& rec, std::string& text, double& confidence) {
+		std::vector<ocr::OCRLine> kept;
+		for (auto const& line : rec.lines) {
+			if (line.text.empty())
+				continue;
+			int const chars = OcrCharCount(NormalizeOcrText(line.text));
+			if (line.confidence < MinimumOcrConfidence(chars))
+				continue;
+			// PaddleOCR can report the same line twice (two overlapping boxes).
+			bool duplicate = false;
+			for (auto const& seen : kept)
+				if (seen.text == line.text) {
+					duplicate = true;
+					break;
+				}
+			if (!duplicate)
+				kept.push_back(line);
+		}
+		if (kept.empty())
+			return false;
+
+		text.clear();
+		confidence = 0.0;
+		for (size_t k = 0; k < kept.size(); ++k) {
+			if (k)
+				text += "\n";
+			text += kept[k].text;
+			confidence += kept[k].confidence;
+		}
+		confidence /= static_cast<double>(kept.size());
+		return true;
+	};
+
+	auto read_crop = [&](RegionImage const& crop, std::string& text, double& confidence) {
+		ocr::OCRResult rec;
+		try {
+			rec = recognize(crop);
+		}
+		catch (...) {
+			return false;
+		}
+		return rec.ok && keep_reading(rec, text, confidence);
+	};
+
+	// Reads one frame's row crop. Only the deferred re-read of a weak row calls
+	// this, so the seek it causes never disturbs the sequential frame pass.
+	auto read_frame_at = [&](int frame_index, TimelineRect const& rec,
+	                         std::string& text, double& confidence) {
+		auto frame_data = loader(frame_index);
+		if (!frame_data)
+			return false;
+		auto crop = CropRegion(*frame_data, opts.region_x + rec.x, opts.region_y + rec.y,
+		                       rec.w, rec.h);
+		if (!crop.Valid())
+			return false;
+		return read_crop(crop, text, confidence);
+	};
+
+	// Fills a new row's template, report geometry and first reading. The
+	// reading comes from the very frame the OCR sample used, so no seek is
+	// needed; `need_better_text` asks for a re-read at the middle of the run.
+	auto build_row = [&](RowTrack& tr, TimelineRect const& box, LumaImage const& region_luma,
+	                     VideoFrame const& frame, int f) {
+		int const px = std::max(8, box.w / 10);
+		int const py = std::max(8, box.h / 3);
+		TimelineRect scan_rect;
+		scan_rect.x = std::max(0, box.x - px);
+		scan_rect.y = std::max(0, box.y - py);
+		scan_rect.w = std::min(scan_region_w - scan_rect.x, box.w + 2 * px);
+		scan_rect.h = std::min(scan_region_h - scan_rect.y, box.h + 2 * py);
+		if (!scan_rect.Valid())
+			return false;
+
+		tr.scan_rect = scan_rect;
+		tr.tpl = CropLumaRegion(region_luma, scan_rect.x, scan_rect.y, scan_rect.w, scan_rect.h);
+		if (!tr.tpl.Valid())
+			return false;
+		tr.text_pixels = TemplateTextPixelsLuma(tr.tpl);
+		if (tr.text_pixels.empty())
+			return false;
+
+		// Reported box: the padded template box, in region then video pixels.
+		TimelineRect row_region;
+		row_region.x = static_cast<int>(std::lround(scan_rect.x * video_per_scan_x));
+		row_region.y = static_cast<int>(std::lround(scan_rect.y * video_per_scan_y));
+		row_region.w = std::max(1, static_cast<int>(std::lround(scan_rect.w * video_per_scan_x)));
+		row_region.h = std::max(1, static_cast<int>(std::lround(scan_rect.h * video_per_scan_y)));
+		tr.row_region = row_region;
+		tr.row_video.x = opts.region_x + row_region.x;
+		tr.row_video.y = opts.region_y + row_region.y;
+		tr.row_video.w = row_region.w;
+		tr.row_video.h = row_region.h;
+
+		// Tight crop for recognition: the detected line plus a small margin, in
+		// region coordinates (the same window the previous per-row pass used).
+		TimelineRect text_region;
+		text_region.x = static_cast<int>(std::lround(box.x * video_per_scan_x));
+		text_region.y = static_cast<int>(std::lround(box.y * video_per_scan_y));
+		text_region.w = std::max(1, static_cast<int>(std::lround(box.w * video_per_scan_x)));
+		text_region.h = std::max(1, static_cast<int>(std::lround(box.h * video_per_scan_y)));
+		int const margin_x = std::max(2, text_region.w / 20);
+		int const margin_y = std::max(1, text_region.h / 10);
+		TimelineRect rec;
+		rec.x = std::max(0, text_region.x - margin_x);
+		rec.y = std::max(0, text_region.y - margin_y);
+		rec.w = std::min(opts.region_w - rec.x, text_region.w + 2 * margin_x);
+		rec.h = std::min(opts.region_h - rec.y, text_region.h + 2 * margin_y);
+		if (rec.w <= 0 || rec.h <= 0)
+			return false;
+		tr.rec_region = rec;
+
+		auto crop = CropRegion(frame, opts.region_x + rec.x, opts.region_y + rec.y, rec.w, rec.h);
+		std::string text;
+		double confidence = 0.0;
+		if (crop.Valid() && read_crop(crop, text, confidence)) {
+			tr.text = text;
+			tr.confidence = confidence;
+			tr.need_better_text = OcrCharCount(NormalizeOcrText(text)) <= 4
+				|| confidence < 0.85;
+		}
+		else {
+			tr.need_better_text = true;
+		}
+
+		tr.tracking = true;
+		tr.last_present = f;
+		tr.absent_run = 0;
+		tr.start = f;
+		tr.start_clipped = true;
+
+		// Walk the ring backwards while the template still matches: these frames
+		// are already decoded, so the exact start costs comparisons.
+		double const exit = opts.threshold_exit > 0 ? opts.threshold_exit : opts.threshold * 0.75;
+		for (int i = 0; i < ring_count; ++i) {
+			int const index = (ring_next + kRingSize - 1 - i) % kRingSize;
+			int const frame_no = ring_frames[static_cast<size_t>(index)];
+			if (frame_no < 0 || frame_no < start)
+				break;
+			double const coverage = LumaTemplateCoverage(ring[static_cast<size_t>(index)],
+			                                             scan_rect.x, scan_rect.y,
+			                                             tr.tpl, tr.text_pixels);
+			if (coverage < exit) {
+				tr.start_clipped = false;
+				break;
+			}
+			tr.start = frame_no;
+		}
+		return true;
+	};
+
+	auto emit_row = [&](RowTrack const& tr, std::string text, double confidence) {
+		if (text.empty())
+			return;
+		TimelineRowEvent ev;
+		ev.start_frame = tr.start;
+		ev.end_frame = tr.last_present;
+		ev.rep_frame = tr.first_seen;
+		ev.center_ok = tr.center_ok;
+		ev.row_video = tr.row_video;
+		ev.row_region = tr.row_region;
+		ev.text = std::move(text);
+		if (opts.replace_newlines)
+			for (auto& ch : ev.text)
+				if (ch == '\n') ch = ' ';
+		ev.confidence = confidence;
+		ev.ocr_verified = true;
+		++profile->rows;
+		if (row_callback)
+			row_callback(ev);
+		out.events.push_back(ev);
+	};
+
+	// A row's run ended. Emit it, or queue the re-read if its first reading was
+	// weak (which happens when the sample that discovered it landed on a fade or
+	// a short line).
+	auto finalize_row = [&](size_t index, int end_frame) {
+		RowTrack& tr = tracks[index];
+		tr.open = false;
+		int const first = tr.start;
+		if (first < 0 || end_frame < first)
+			return;
+		if (end_frame - first + 1 < std::max(1, opts.min_duration_frames))
+			return;
+		if (tr.need_better_text) {
+			deferred.push_back(index);
+			return;
+		}
+		emit_row(tr, tr.text, tr.confidence);
+	};
+
 	int done = 0;
 	for (int f = start; f <= end; ++f) {
 		if (cancel && cancel()) {
@@ -581,11 +812,41 @@ TimelineScanResult ScanVideoTimeline(TimelineScanOptions const& opts,
 
 		unsigned long long h = LumaSignature(luma);
 		profile->us_change += UsBetween(pixels_begin, Clock::now());
+
+		// Per-frame presence of every row currently on screen: one comparison
+		// per template text pixel against a frame the pass already has. This is
+		// what replaces the second decode pass per row.
+		auto const presence_begin = Clock::now();
+		double const exit = opts.threshold_exit > 0 ? opts.threshold_exit : opts.threshold * 0.75;
+		for (size_t i = 0; i < tracks.size(); ++i) {
+			RowTrack& tr = tracks[i];
+			if (!tr.open || !tr.tracking)
+				continue;
+			double const coverage = LumaTemplateCoverage(luma, tr.scan_rect.x, tr.scan_rect.y,
+			                                             tr.tpl, tr.text_pixels);
+			if (coverage >= exit) {
+				tr.last_present = f;
+				tr.absent_run = 0;
+			}
+			else if (++tr.absent_run >= settle_confirm) {
+				finalize_row(i, tr.last_present);
+			}
+		}
+		profile->us_presence += UsBetween(presence_begin, Clock::now());
+
 		bool content_changed = !has_ocr || h != last_hash;
 		int since = f - last_ocr;
 		bool do_ocr = detect && (!has_ocr
 			|| (content_changed && settled && since >= detect_every)
 			|| (content_changed && since >= detect_every_max));
+
+		// Keep this frame for the start search of a row discovered later, then
+		// hand the buffer to the change detector.
+		ring[static_cast<size_t>(ring_next)] = luma;
+		ring_frames[static_cast<size_t>(ring_next)] = f;
+		ring_next = (ring_next + 1) % kRingSize;
+		if (ring_count < kRingSize)
+			++ring_count;
 		prev_luma = std::move(luma);
 		// Keep have_prev true for every subsequent valid frame so the settle
 		// detector can compare the previous frame with the current one. Without
@@ -650,22 +911,23 @@ TimelineScanResult ScanVideoTimeline(TimelineScanOptions const& opts,
 				tr.last_seen = f;
 				tr.seen_count++;
 				tr.misses = 0;
-				tr.region_rect = rect;
 				tr.center_ok = center_ok;
+				// The template was cropped at the discovery box; moving the box
+				// now would invalidate the coverage indices, so a row that drifts
+				// out of it simply ends and is picked up (and merged) again.
+				if (!tr.tracking)
+					build_row(tr, rect, prev_luma, *frame, f);
 			}
 			else {
-				tracks.push_back(RowTrack{band, sig, f, f, 1, 0, true, center_ok, rect});
-			}
-		}
-
-		// Close tracks that were not seen at this sample (their last_seen is not
-		// the current frame) for a real gap, not just one miss.
-		for (size_t i = 0; i < tracks.size(); ++i) {
-			if (tracks[i].open && tracks[i].last_seen != f) {
-				int gap = f - tracks[i].last_seen;
-				tracks[i].misses++;
-				if (gap >= std::max(detect_every * 2, 1))
-					tracks[i].open = false;
+				RowTrack tr;
+				tr.band = band;
+				tr.signature = sig;
+				tr.first_seen = f;
+				tr.last_seen = f;
+				tr.seen_count = 1;
+				tr.center_ok = center_ok;
+				if (build_row(tr, rect, prev_luma, *frame, f))
+					tracks.push_back(std::move(tr));
 			}
 		}
 
@@ -676,260 +938,64 @@ TimelineScanResult ScanVideoTimeline(TimelineScanOptions const& opts,
 	if (out.cancelled)
 		return out;
 
-	for (auto& tr : tracks)
-		if (tr.open)
-			tr.open = false;
+	// Rows still on screen when the scan range ends finish at their last frame.
+	for (size_t i = 0; i < tracks.size(); ++i)
+		if (tracks[i].open)
+			finalize_row(i, tracks[i].last_present);
 
-	ScanOptions scan;
-	scan.threshold = opts.threshold;
-	scan.threshold_exit = opts.threshold_exit;
-	scan.confirm_frames = opts.confirm_frames;
-	scan.min_duration_frames = opts.min_duration_frames;
+	// Deferred re-reads, ascending by their middle frame so seeks stay forward.
+	if (!deferred.empty()) {
+		std::sort(deferred.begin(), deferred.end(), [&](size_t a, size_t b) {
+			RowTrack const& ta = tracks[a];
+			RowTrack const& tb = tracks[b];
+			int const ma = ta.start + (ta.last_present - ta.start) / 2;
+			int const mb = tb.start + (tb.last_present - tb.start) / 2;
+			return ma < mb;
+		});
 
-	int row_done = 0;
-	for (auto const& tr : tracks) {
-		if (tr.last_seen < tr.first_seen)
-			continue;
-		++profile->rows;
-		if (progress)
-			progress(ScanPhase::Rows, row_done, static_cast<int>(tracks.size()));
-		++row_done;
-		int rep = tr.first_seen + (tr.last_seen - tr.first_seen) / 2;
-
-		auto const row_frame_begin = Clock::now();
-		auto frame = loader(rep);
-		profile->us_decode += UsBetween(row_frame_begin, Clock::now());
-		if (!frame)
-			continue;
-		auto const row_region_begin = Clock::now();
-		auto region = downscale
-			? CropRegionScaled(*frame, opts.region_x, opts.region_y,
-			                   opts.region_w, opts.region_h,
-			                   scan_region_w, scan_region_h)
-			: CropRegion(*frame, opts.region_x, opts.region_y,
-			             opts.region_w, opts.region_h);
-		profile->us_region += UsBetween(row_region_begin, Clock::now());
-		if (!region.Valid())
-			continue;
-
-		// The track's stored box is the one the last detection reported for this
-		// row. Re-detecting on the representative frame to re-align it cost a
-		// whole extra OCR pass per row and bought a pixel or two: the box is
-		// padded below, and the recognizer is tolerant of a few pixels of drift.
-		TimelineRect box = tr.region_rect;
-
-		// Pad the box a little so the glyphs never touch the crop edge (which
-		// would make the recognizer hallucinate) and so the boundary template
-		// gets a bit of text + stable background context.
-		int px = std::max(8, box.w / 10);
-		int py = std::max(8, box.h / 3);
-		TimelineRect row_box;
-		row_box.x = std::max(0, box.x - px);
-		row_box.y = std::max(0, box.y - py);
-		row_box.w = box.w + 2 * px;
-		row_box.h = box.h + 2 * py;
-
-		// `row_box` is in scan coordinates; convert it to original-region
-		// coordinates for the report and for cropping the full-resolution
-		// template that the boundary scan compares against.
-		TimelineRect row_box_region;
-		row_box_region.x = static_cast<int>(std::lround(row_box.x * video_per_scan_x));
-		row_box_region.y = static_cast<int>(std::lround(row_box.y * video_per_scan_y));
-		row_box_region.w = std::max(1, static_cast<int>(std::lround(row_box.w * video_per_scan_x)));
-		row_box_region.h = std::max(1, static_cast<int>(std::lround(row_box.h * video_per_scan_y)));
-
-		TimelineRect rv;
-		rv.x = opts.region_x + row_box_region.x;
-		rv.y = opts.region_y + row_box_region.y;
-		rv.w = row_box_region.w;
-		rv.h = row_box_region.h;
-
-		// The template keeps the scan-coordinate size so it matches what the
-		// per-frame downscaled region looks like; the boundary scan crops the
-		// full-resolution source rectangle and resamples it to this size.
-		auto tpl = downscale
-			? CropRegionScaled(*frame, rv.x, rv.y, rv.w, rv.h, row_box.w, row_box.h)
-			: CropRegion(*frame, rv.x, rv.y, rv.w, rv.h);
-		if (!tpl.Valid())
-			continue;
-
-		// Recognition uses a tight, full-resolution crop of the detected line.
-		// The padded `tpl` above is right for the coverage scan (it needs stable
-		// background context), but wrong for the recognizer: padding the height
-		// by a third squeezes the glyphs once the crop is normalized to 48 px,
-		// and the background around the text is what short readings hallucinate
-		// on. `frame` must not be touched past this point: the frame loader
-		// reuses its buffer for every subsequent frame.
-		TimelineRect text_region;
-		text_region.x = static_cast<int>(std::lround(box.x * video_per_scan_x));
-		text_region.y = static_cast<int>(std::lround(box.y * video_per_scan_y));
-		text_region.w = std::max(1, static_cast<int>(std::lround(box.w * video_per_scan_x)));
-		text_region.h = std::max(1, static_cast<int>(std::lround(box.h * video_per_scan_y)));
-
-		int margin_x = std::max(2, text_region.w / 20);
-		int margin_y = std::max(1, text_region.h / 10);
-		TimelineRect rec_region;
-		rec_region.x = std::max(0, text_region.x - margin_x);
-		rec_region.y = std::max(0, text_region.y - margin_y);
-		rec_region.w = std::min(opts.region_w - rec_region.x,
-		                        text_region.w + 2 * margin_x);
-		rec_region.h = std::min(opts.region_h - rec_region.y,
-		                        text_region.h + 2 * margin_y);
-		if (rec_region.w <= 0 || rec_region.h <= 0)
-			continue;
-
-		// Read one frame with the caller's recognizer, keeping only lines that
-		// clear the length-aware confidence bar. Returns false when the frame
-		// carries no usable text.
-		auto read_frame = [&](int frame_index, std::string& text, double& confidence) {
-			auto frame_data = loader(frame_index);
-			if (!frame_data)
-				return false;
-			auto crop = CropRegion(*frame_data,
-			                       opts.region_x + rec_region.x,
-			                       opts.region_y + rec_region.y,
-			                       rec_region.w, rec_region.h);
-			if (!crop.Valid())
-				return false;
-
-			ocr::OCRResult rec;
-			try {
-				rec = recognize(crop);
+		for (size_t n = 0; n < deferred.size(); ++n) {
+			if (cancel && cancel()) {
+				out.cancelled = true;
+				return out;
 			}
-			catch (...) {
-				return false;
-			}
-			if (!rec.ok)
-				return false;
+			if (progress)
+				progress(ScanPhase::Rows, static_cast<int>(n), static_cast<int>(deferred.size()));
+			RowTrack& tr = tracks[deferred[n]];
+			int const mid = tr.start + (tr.last_present - tr.start) / 2;
 
-			std::vector<ocr::OCRLine> kept;
-			for (auto const& line : rec.lines) {
-				if (line.text.empty())
-					continue;
-				int chars = OcrCharCount(NormalizeOcrText(line.text));
-				if (line.confidence < MinimumOcrConfidence(chars))
-					continue;
-				// PaddleOCR can report the same line twice (two overlapping
-				// detection boxes); keep the first occurrence so the text is
-				// not duplicated.
-				bool duplicate = false;
-				for (auto const& seen : kept) {
-					if (seen.text == line.text) {
-						duplicate = true;
-						break;
-					}
-				}
-				if (!duplicate)
-					kept.push_back(line);
-			}
-			if (kept.empty())
-				return false;
+			std::vector<std::pair<std::string, double>> candidates;
+			if (!tr.text.empty())
+				candidates.emplace_back(tr.text, tr.confidence);
 
-			text.clear();
-			confidence = 0.0;
-			for (size_t k = 0; k < kept.size(); ++k) {
-				if (k)
-					text += "\n";
-				text += kept[k].text;
-				confidence += kept[k].confidence;
-			}
-			confidence /= kept.size();
-			return true;
-		};
-
-		std::vector<std::pair<std::string, double>> candidates;
-		{
+			auto const row_begin = Clock::now();
 			std::string text;
 			double confidence = 0.0;
-			if (read_frame(rep, text, confidence))
+			if (read_frame_at(mid, tr.rec_region, text, confidence))
 				candidates.emplace_back(std::move(text), confidence);
-		}
-
-		// A single frame is unreliable exactly where it matters most: short
-		// utterances and low-confidence reads. The following frames come from
-		// the scan decoder's sequential pass, so voting costs a few decode
-		// milliseconds rather than another seek. Long, confident readings skip
-		// the extra calls entirely.
-		//
-		// The window runs to the end of the video, not to the track's last
-		// sighting: a subtitle often appears and disappears between two OCR
-		// samples, so a track has exactly one sighting and sampling from
-		// `last_seen` would never add a second reading. A sample past the end of
-		// the run reads nothing (or another subtitle) and loses the vote, so
-		// widening the window is safe.
-		int samples = std::max(1, opts.consensus_samples);
-		bool suspect = candidates.empty()
-			|| OcrCharCount(NormalizeOcrText(candidates.front().first)) <= 4
-			|| candidates.front().second < 0.88;
-		if (samples > 1 && suspect) {
-			int last = opts.frame_count - 1;
-			for (int offset = 1; offset < samples; ++offset) {
-				int sample = rep + offset;
-				if (sample > last)
+			for (int offset = 1; offset <= 2; ++offset) {
+				if (mid + offset > tr.last_present)
 					break;
-				std::string text;
-				double confidence = 0.0;
-				if (read_frame(sample, text, confidence))
-					candidates.emplace_back(std::move(text), confidence);
+				std::string more;
+				double more_confidence = 0.0;
+				if (read_frame_at(mid + offset, tr.rec_region, more, more_confidence))
+					candidates.emplace_back(std::move(more), more_confidence);
 			}
-		}
+			profile->us_boundary += UsBetween(row_begin, Clock::now());
 
-		std::string best_text = VoteBestOcrText(candidates);
-		double best_confidence = 0.0;
-		if (!best_text.empty()) {
-			std::string best_key = NormalizeOcrText(best_text);
-			for (auto const& candidate : candidates) {
+			if (candidates.empty())
+				continue;
+			std::string best_text = VoteBestOcrText(candidates);
+			double best_confidence = 0.0;
+			std::string const best_key = NormalizeOcrText(best_text);
+			for (auto const& candidate : candidates)
 				if (NormalizeOcrText(candidate.first) == best_key)
 					best_confidence = std::max(best_confidence, candidate.second);
-			}
+			emit_row(tr, best_text, best_confidence);
 		}
-
-		// Search the exact run without an artificial cap: the template
-		// coverage signal only matches this row's own text, so a generous
-		// search cannot jump to an unrelated subtitle, and it recovers the
-		// true start even when OCR discovered the row late.
-		scan.max_frames = 0;
-		scan.tpl_source_width = downscale ? rv.w : 0;
-		scan.tpl_source_height = downscale ? rv.h : 0;
-		auto const boundary_begin = Clock::now();
-		auto res = ScanBoundaries(tpl, rv.x, rv.y, rep, opts.frame_count, scan,
-		                          loader, cancel, ProgressFn(), opts.keyframes);
-		profile->us_boundary += UsBetween(boundary_begin, Clock::now());
-		if (!res.ok)
-			continue;
-		profile->boundary_frames += static_cast<int>(res.frames.size());
-
-		TimelineRowEvent ev;
-		ev.start_frame = res.start_frame;
-		ev.end_frame = res.end_frame;
-		ev.rep_frame = rep;
-		ev.center_ok = tr.center_ok;
-		ev.row_video = rv;
-		ev.row_region = row_box_region;
-
-		if (!best_text.empty()) {
-			ev.text = best_text;
-			if (opts.replace_newlines)
-				for (auto& ch : ev.text)
-					if (ch == '\n') ch = ' ';
-			ev.confidence = best_confidence;
-			ev.ocr_verified = true;
-		}
-
-		// Drop rows with no readable text: these are the false positives on a
-		// dynamic scene or empty background that OCR "detected" but could not
-		// read, and they only add blank/garbage entries to the result.
-		if (ev.text.empty())
-			continue;
-
-		if (row_callback)
-			row_callback(ev);
-		out.events.push_back(ev);
 	}
-
 	if (progress)
-		progress(ScanPhase::Rows, static_cast<int>(tracks.size()),
-		         static_cast<int>(tracks.size()));
+		progress(ScanPhase::Rows, static_cast<int>(deferred.size()),
+		         static_cast<int>(deferred.size()));
 	if (progress)
 		progress(ScanPhase::Finalize, 0, 1);
 

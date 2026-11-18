@@ -518,6 +518,106 @@ unsigned long long LumaSignature(LumaImage const& img) {
 	return h;
 }
 
+LumaImage CropLumaRegion(LumaImage const& src, int x, int y, int width, int height) {
+	LumaImage out;
+	if (!src.Valid() || width <= 0 || height <= 0)
+		return out;
+	if (x < 0 || y < 0 || x + width > src.width || y + height > src.height)
+		return out;
+
+	out.width = width;
+	out.height = height;
+	out.data.resize(static_cast<size_t>(width) * height);
+	for (int row = 0; row < height; ++row)
+		std::memcpy(out.data.data() + static_cast<size_t>(row) * width,
+		            src.data.data() + static_cast<size_t>(y + row) * src.width + x,
+		            static_cast<size_t>(width));
+	return out;
+}
+
+std::vector<int> TemplateTextPixelsLuma(LumaImage const& tpl, int deviation) {
+	std::vector<int> out;
+	if (!tpl.Valid())
+		return out;
+
+	// Dominant background luminance: the mode of a coarse histogram, the same
+	// shape as the RGB template mask.
+	constexpr int kNumBins = 32;
+	constexpr int kBinWidth = 256 / kNumBins;
+	int bins[kNumBins] = {0};
+	for (unsigned char value : tpl.data)
+		++bins[std::min(kNumBins - 1, value / kBinWidth)];
+
+	int mode_bin = 0;
+	for (int b = 1; b < kNumBins; ++b)
+		if (bins[b] > bins[mode_bin])
+			mode_bin = b;
+
+	int const bin_lo = mode_bin * kBinWidth;
+	int const bin_hi = std::min(255, bin_lo + kBinWidth);
+	long long bg_sum = 0;
+	int bg_count = 0;
+	for (unsigned char value : tpl.data) {
+		if (value >= bin_lo && value < bin_hi) {
+			bg_sum += value;
+			++bg_count;
+		}
+	}
+	int const bg_lum = bg_count > 0 ? static_cast<int>(bg_sum / bg_count) : 0;
+
+	// Subtitle ink is near-white or near-black against the scene. Selecting by
+	// luminance extremes relative to the background keeps scene texture out of
+	// the comparison, so a moving camera does not move the coverage.
+	int const bright_thresh = std::clamp(bg_lum + 80, 195, 235);
+	int const dark_thresh = std::clamp(bg_lum - 80, 25, 60);
+	bool const use_bright = bg_lum < 140;
+	bool const use_dark = bg_lum > 200;
+
+	for (size_t i = 0; i < tpl.data.size(); ++i) {
+		int const l = tpl.data[i];
+		bool text = false;
+		if (use_bright)
+			text = l >= bright_thresh;
+		else if (use_dark)
+			text = l <= dark_thresh;
+		else
+			text = l >= bright_thresh || l <= dark_thresh;
+		if (text)
+			out.push_back(static_cast<int>(i));
+	}
+
+	// Coloured text on a mid-luminance scene may not reach the extremes; fall
+	// back to the deviation test, like the RGB mask does.
+	if (out.size() < tpl.data.size() / 64) {
+		out.clear();
+		for (size_t i = 0; i < tpl.data.size(); ++i)
+			if (std::abs(static_cast<int>(tpl.data[i]) - bg_lum) >= deviation)
+				out.push_back(static_cast<int>(i));
+	}
+	return out;
+}
+
+double LumaTemplateCoverage(LumaImage const& frame, int x, int y,
+                            LumaImage const& tpl,
+                            std::vector<int> const& text_pixels,
+                            int match_threshold) {
+	if (!frame.Valid() || !tpl.Valid() || text_pixels.empty())
+		return 0.0;
+	if (x < 0 || y < 0 || x + tpl.width > frame.width || y + tpl.height > frame.height)
+		return 0.0;
+
+	int matched = 0;
+	for (int px : text_pixels) {
+		int const tx = px % tpl.width;
+		int const ty = px / tpl.width;
+		int const diff = std::abs(static_cast<int>(tpl.data[px]) -
+		                          static_cast<int>(frame.data[static_cast<size_t>(y + ty) * frame.width + x + tx]));
+		if (diff <= match_threshold)
+			++matched;
+	}
+	return double(matched) / double(text_pixels.size());
+}
+
 double RegionChangedRatio(RegionImage const& a, RegionImage const& b, int pixel_threshold) {
 	if (!a.Valid() || !b.Valid() || a.width != b.width || a.height != b.height)
 		return 1.0;

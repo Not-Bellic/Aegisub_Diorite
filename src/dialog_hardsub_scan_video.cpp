@@ -800,7 +800,7 @@ void DialogHardSubScanVideo::OnScanDone(ValueEvent<HardSubScanVideoOutcome>& eve
 		auto const& prof = outcome.profile;
 		long long const ocr_ms = prof.OcrMs();
 		long long const total_ms = std::max<long long>(
-			1, prof.MsDecode() + prof.MsRegion() + prof.MsChange() + ocr_ms + prof.MsOcrImage() + prof.MsBoundary());
+			1, prof.MsDecode() + prof.MsRegion() + prof.MsChange() + ocr_ms + prof.MsOcrImage() + prof.MsBoundary() + prof.MsPresence());
 		auto pct = [total_ms](long long ms) {
 			return static_cast<int>(100.0 * ms / total_ms);
 		};
@@ -808,7 +808,7 @@ void DialogHardSubScanVideo::OnScanDone(ValueEvent<HardSubScanVideoOutcome>& eve
 			<< prof.boundary_frames << " boundary frames: decode " << prof.MsDecode()
 			<< " ms (ffms " << outcome.decoder_ms << " + copy " << outcome.copy_ms
 			<< "), region " << prof.MsRegion() << " ms, change " << prof.MsChange()
-			<< " ms, boundary " << prof.MsBoundary() << " ms, OCR engine " << ocr_ms
+			<< " ms, row presence " << prof.MsPresence() << " ms, deferred reads " << prof.MsBoundary() << " ms, OCR engine " << ocr_ms
 			<< " ms (" << prof.ocr_detect_calls << " detect, "
 			<< prof.ocr_recognize_calls << " recognize), OCR image " << prof.MsOcrImage()
 			<< " ms";
@@ -820,7 +820,7 @@ void DialogHardSubScanVideo::OnScanDone(ValueEvent<HardSubScanVideoOutcome>& eve
 				                   pct(prof.MsDecode()),
 				                   pct(prof.MsRegion() + prof.MsChange()),
 				                   pct(ocr_ms + prof.MsOcrImage()),
-				                   pct(prof.MsBoundary())));
+				                   pct(prof.MsBoundary() + prof.MsPresence())));
 		}
 		else {
 			SetStatus(wxString::Format(_("Scan complete: %d lines detected."),

@@ -270,11 +270,12 @@ std::string BuildReport(Request const &request, int width, int height, int frame
 		", \"change\": " + std::to_string(profile.MsChange()) +
 		", \"ocr_engine\": " + std::to_string(profile.OcrMs()) +
 		", \"ocr_image\": " + std::to_string(profile.MsOcrImage()) +
-		", \"boundary\": " + std::to_string(profile.MsBoundary());
+		", \"boundary\": " + std::to_string(profile.MsBoundary()) +
+		", \"presence\": " + std::to_string(profile.MsPresence());
 	json += "},\n  \"share\": {\"decode\": " + Number(pct(profile.MsDecode()), "%.1f") +
 		", \"pixels\": " + Number(pct(profile.MsRegion() + profile.MsChange()), "%.1f") +
 		", \"ocr\": " + Number(pct(profile.OcrMs() + profile.MsOcrImage()), "%.1f") +
-		", \"rows\": " + Number(pct(profile.MsBoundary()), "%.1f") + "}";
+		", \"rows\": " + Number(pct(profile.MsBoundary() + profile.MsPresence()), "%.1f") + "}";
 
 	json += ",\n  \"first_events\": [";
 	size_t const shown = std::min<size_t>(result.events.size(), 10);
@@ -284,6 +285,10 @@ std::string BuildReport(Request const &request, int width, int height, int frame
 		auto const &ev = result.events[i];
 		json += "\n    {\"start\": " + std::to_string(ev.start_frame) +
 			", \"end\": " + std::to_string(ev.end_frame) +
+			", \"confidence\": " + Number(ev.confidence, "%.3f") +
+			", \"box\": [" + std::to_string(ev.row_video.x) + ", " +
+			std::to_string(ev.row_video.y) + ", " + std::to_string(ev.row_video.w) + ", " +
+			std::to_string(ev.row_video.h) + "]" +
 			", \"text\": \"" + EscapeJson(ev.text) + "\"}";
 	}
 	if (shown)

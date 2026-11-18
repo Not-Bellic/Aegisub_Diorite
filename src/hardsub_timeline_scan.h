@@ -68,6 +68,8 @@ struct ScanProfile {
 	int rows = 0;
 	int boundary_frames = 0;
 	long long us_boundary = 0;
+	/// Per-frame template coverage for the rows currently on screen.
+	long long us_presence = 0;
 
 	long long MsDecode() const { return us_decode / 1000; }
 	long long MsRegion() const { return us_region / 1000; }
@@ -76,10 +78,11 @@ struct ScanProfile {
 	long long MsRecognize() const { return us_recognize / 1000; }
 	long long MsOcrImage() const { return us_ocr_image / 1000; }
 	long long MsBoundary() const { return us_boundary / 1000; }
+	long long MsPresence() const { return us_presence / 1000; }
 	long long OcrMs() const { return (us_detect + us_recognize) / 1000; }
 	long long TotalMs() const {
 		return (us_decode + us_region + us_change + us_detect + us_recognize +
-		        us_ocr_image + us_boundary) / 1000;
+		        us_ocr_image + us_boundary + us_presence) / 1000;
 	}
 };
 

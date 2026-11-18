@@ -136,10 +136,17 @@ try {
     New-Item -ItemType Directory -Path $UnicodeDir -Force | Out-Null
     Copy-Item -LiteralPath $PortableExe -Destination $SmokeExe
     $AssDrawProcess = Start-Process -FilePath $SmokeExe -WorkingDirectory $UnicodeDir -PassThru
-    Start-Sleep -Seconds 5
-    $AssDrawProcess.Refresh()
-    if ($AssDrawProcess.HasExited) {
-        throw "ASSDraw3.exe exited during startup with code $($AssDrawProcess.ExitCode)."
+    # A freshly started GUI process may not have its main window yet, and a
+    # loaded runner can take well over the old fixed five-second sample. Poll
+    # for the window instead of sampling once.
+    $AssDrawDeadline = [DateTime]::UtcNow.AddSeconds(30)
+    while ([DateTime]::UtcNow -lt $AssDrawDeadline) {
+        Start-Sleep -Milliseconds 250
+        $AssDrawProcess.Refresh()
+        if ($AssDrawProcess.HasExited) {
+            throw "ASSDraw3.exe exited during startup with code $($AssDrawProcess.ExitCode)."
+        }
+        if ($AssDrawProcess.MainWindowHandle -ne 0) { break }
     }
     if ($AssDrawProcess.MainWindowHandle -eq 0) {
         throw 'ASSDraw3.exe did not create a visible window when launched from a Unicode path containing spaces.'

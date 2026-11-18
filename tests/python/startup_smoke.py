@@ -201,8 +201,22 @@ aegisub.register_macro 'Smoke Moon', '', ->
                 wait(lambda: (profile / "held-finished").exists(), "held macro finished")
                 wait(lambda: len(re.findall(r'"section"\s*:\s*"startup/automation"', logs())) >= 3, "publication after macro completion")
                 user.PostMessageW(manager, 0x10, 0, 0)
-                for label in ("Smoke Lua", "Smoke Moon"):
-                    assert sum(name == label for name, _ in entries(user.GetMenu(frame))) == 1
+
+                def macro_counts():
+                    labels = [name for name, _ in entries(user.GetMenu(frame))]
+                    return {label: labels.count(label) for label in ("Smoke Lua", "Smoke Moon")}
+
+                # Publication rebuilds the menu from the timer handler, so give it
+                # a moment before insisting the list has settled.
+                try:
+                    wait(lambda: all(count == 1 for count in macro_counts().values()),
+                         "each published macro listed once")
+                except AssertionError:
+                    print(json.dumps({"scenario": scenario,
+                                      "macro_counts": macro_counts(),
+                                      "menu_labels": [name for name, _ in entries(user.GetMenu(frame))]},
+                                     indent=2), flush=True)
+                    raise
                 # Avoid a save prompt after the intentional edit; undo via SCI_UNDO.
                 send(edit, 2176)
             elif scenario == "cancel":

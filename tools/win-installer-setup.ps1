@@ -312,7 +312,34 @@ $OpenCVRuntimeSetup = Join-Path $SourceRoot "tools\copy-opencv-runtime.ps1"
 & $OpenCVRuntimeSetup -DestinationDir $OpenCVRuntimeDir
 if(!$?) { Exit $LASTEXITCODE }
 
-# Invoke InnoSetup
+# Invoke InnoSetup. Resolve ISCC explicitly: when only a shim-less installation
+# was present the bare `iscc` call raised a command-not-found error, $? turned
+# false, and `Exit $LASTEXITCODE` re-used the previous command's 0, so this
+# script reported success without producing an installer.
 $IssUrl = Join-Path $InstallerDir "aegisub_depctrl.iss"
-iscc $IssUrl
-if(!$?) { Exit $LASTEXITCODE }
+$IsccPath = $null
+$IsccCommand = Get-Command ISCC.exe -ErrorAction SilentlyContinue
+if ($IsccCommand) {
+	$IsccPath = $IsccCommand.Source
+}
+if (!$IsccPath) {
+	$IsccCandidates = @(
+		(Join-Path ${env:ProgramFiles(x86)} "Inno Setup 6\ISCC.exe"),
+		(Join-Path $env:ProgramFiles "Inno Setup 6\ISCC.exe"),
+		(Join-Path ${env:ProgramFiles(x86)} "Inno Setup 5\ISCC.exe"),
+		(Join-Path $env:ProgramFiles "Inno Setup 5\ISCC.exe")
+	)
+	$IsccPath = $IsccCandidates | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Leaf) } | Select-Object -First 1
+}
+if (!$IsccPath) {
+	throw "Inno Setup compiler (ISCC.exe) was not found. Install Inno Setup or put ISCC.exe on PATH."
+}
+Write-Output "Using Inno Setup compiler: $IsccPath"
+& $IsccPath $IssUrl
+if ($LASTEXITCODE -ne 0) { throw "Inno Setup compilation failed with exit code $LASTEXITCODE." }
+$InstallerOutput = Get-ChildItem -LiteralPath $BuildRoot -Filter "Aegisub-*.exe" -File |
+	Sort-Object LastWriteTime -Descending | Select-Object -First 1
+if (!$InstallerOutput) {
+	throw "Inno Setup reported success but no Aegisub-*.exe was produced in $BuildRoot."
+}
+Write-Output "Installer: $($InstallerOutput.FullName)"

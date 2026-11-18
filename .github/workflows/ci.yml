@@ -279,7 +279,26 @@ jobs:
       - name: Install dependencies (Windows)
         if: matrix.config.os == 'windows-latest'
         run: |
-          choco install ninja innosetup
+          choco install ninja innosetup -y --no-progress
+
+          # The runner image can ship Inno Setup without putting ISCC.exe on
+          # PATH, so publish the compiler directory explicitly.
+          $iscc = $null
+          $installed = Get-ChildItem "${env:ProgramFiles(x86)}\Inno Setup*\ISCC.exe", "$env:ProgramFiles\Inno Setup*\ISCC.exe" -ErrorAction SilentlyContinue |
+            Sort-Object FullName -Descending | Select-Object -First 1
+          if ($installed) { $iscc = $installed.FullName }
+          if (!$iscc) {
+            $choco = Get-ChildItem "$env:ProgramData\chocolatey\lib" -Recurse -Filter ISCC.exe -ErrorAction SilentlyContinue |
+              Select-Object -First 1
+            if ($choco) { $iscc = $choco.FullName }
+          }
+          if (!$iscc) {
+            $command = Get-Command ISCC.exe -ErrorAction SilentlyContinue
+            if ($command) { $iscc = $command.Source }
+          }
+          if (!$iscc) { throw 'Inno Setup (ISCC.exe) was not found after installation.' }
+          Write-Output "ISCC: $iscc"
+          Split-Path -Parent $iscc | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
           $moonscripturl = "https://github.com/leafo/moonscript/releases/download/win32-v0.5.0/moonscript-187bac54ee5a7450013e9c38e005a0e671b76f45.zip"
           mkdir moonscript

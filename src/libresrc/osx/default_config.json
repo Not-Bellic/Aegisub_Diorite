@@ -534,7 +534,7 @@
 		"HardSubScanVideo" : {
 			"Center Band" : 10,
 			"Center Only" : true,
-			"Detect Every" : 16,
+			"Detect Every Seconds" : 0.6,
 			"Last" : {
 				"X" : -1,
 				"Y" : -1,
@@ -543,7 +543,7 @@
 			},
 			"Maximized" : false,
 			"Merge Same Interval" : true,
-			"Min Duration Frames" : 12,
+			"Min Duration Seconds" : 0.6,
 			"Replace Newlines" : true,
 			"Region X" : -1,
 			"Region Y" : -1,
@@ -553,6 +553,27 @@
 		},
 		"Kanji Timer" : {
 			"Interpolation" : true
+		},
+		"Localization" : {
+			"Files" : "",
+			"Fuzzy" : true,
+			"Hide Source Language" : true,
+			"Ignore Case" : true,
+			"Ignore Punctuation" : true,
+			"Ignore Tags" : true,
+			"Key Regex" : "",
+			"Language" : "中文",
+			"Prefer Without Split Regex" : true,
+			"Roles" : "",
+			"Split Sentences" : true,
+			"Split Regex" : "",
+			"Use Project TM" : true,
+			"Last" : {
+				"X" : -1,
+				"Y" : -1
+			},
+			"Maximized" : false,
+			"Threshold" : 0.7
 		},
 		"Motion Track" : {
 			"Last" : {

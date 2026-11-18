@@ -1356,11 +1356,18 @@ void DialogHardSubScan::OnScanDone(ValueEvent<HardSubScanOutcome>& event) {
 		scan_result_ = std::move(outcome.result);
 		scan_start_ms_ = outcome.start_ms;
 		scan_end_ms_ = outcome.end_ms;
+		// Show the run length in both units: the frame count is what the
+		// timeline edits with, the seconds tell how long the subtitle actually
+		// stays on screen. The seconds come from the video's time codes rather
+		// than the nominal frame rate, so VFR sources stay consistent with the
+		// frame range.
+		int const run_frames = scan_result_.end_frame - scan_result_.start_frame + 1;
+		double const run_seconds = std::max(0, scan_end_ms_ - scan_start_ms_) / 1000.0;
 		wxString label = agi::wxformat(
-			_("Start: frame %d (%s)\nEnd: frame %d (%s)\nDuration: %d frames"),
+			_("Start: frame %d (%s)\nEnd: frame %d (%s)\nDuration: %.2f s (%d frames)"),
 			scan_result_.start_frame, agi::Time(scan_start_ms_).GetAssFormatted(true),
 			scan_result_.end_frame, agi::Time(scan_end_ms_).GetAssFormatted(true),
-			scan_result_.end_frame - scan_result_.start_frame + 1);
+			run_seconds, run_frames);
 		if (outcome.suspect_merge) {
 			label += _("\nWarning: the range may contain multiple subtitles or a mid-run "
 			           "transition. Check the boundaries before inserting.");

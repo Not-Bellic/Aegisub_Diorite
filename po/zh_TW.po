@@ -7548,7 +7548,7 @@ msgstr "文字符合度（%）"
 msgid "Confirm frames"
 msgstr "確認影格數"
 
-#: ../src/dialog_hardsub_scan.cpp ../src/dialog_hardsub_scan_video.cpp
+#: ../src/dialog_hardsub_scan.cpp
 msgid "Min duration (frames)"
 msgstr "最短時長（影格）"
 
@@ -7638,11 +7638,11 @@ msgstr "掃描已取消。"
 msgid ""
 "Start: frame %d (%s)\n"
 "End: frame %d (%s)\n"
-"Duration: %d frames"
+"Duration: %.2f s (%d frames)"
 msgstr ""
 "開始：第 %d 個影格（%s）\n"
 "結束：第 %d 個影格（%s）\n"
-"時長：%d 個影格"
+"時長：%.2f 秒（%d 個影格）"
 
 #: ../src/dialog_hardsub_scan.cpp
 msgid ""
@@ -8050,12 +8050,24 @@ msgid "Center band (%)"
 msgstr "置中範圍（%）"
 
 #: ../src/dialog_hardsub_scan_video.cpp
+msgid "Min duration"
+msgstr "最短時長"
+
+#: ../src/dialog_hardsub_scan_video.cpp
 msgid "Rows whose horizontal center lies inside the middle this many percent of the region are kept; 100 disables the filter."
 msgstr "僅保留水平中心位於區域中部該百分比範圍內的行；設為 100 可關閉此篩選。"
 
 #: ../src/dialog_hardsub_scan_video.cpp
-msgid "OCR every (frames)"
-msgstr "OCR 取樣間隔（幀）"
+msgid "OCR every"
+msgstr "OCR 取樣間隔"
+
+#: ../src/dialog_hardsub_scan_video.cpp
+msgid "sec"
+msgstr "秒"
+
+#: ../src/dialog_hardsub_scan_video.cpp
+msgid "frames"
+msgstr "幀"
 
 #: ../src/dialog_hardsub_scan_video.cpp
 msgid "Minimum gap between OCR samples while the region is stable. Smaller values are more accurate but slower."
@@ -8164,6 +8176,10 @@ msgstr "幀 %d / %d（%d%%）  |  已用時 "
 #: ../src/dialog_hardsub_scan_video.cpp
 msgid "  |  ETA "
 msgstr "  |  預計剩餘 "
+
+#: ../src/dialog_hardsub_scan_video.cpp
+msgid "  |  elapsed "
+msgstr "  |  已用時 "
 
 #: ../src/dialog_hardsub_scan_video.cpp
 msgid "  |  OCR %d"

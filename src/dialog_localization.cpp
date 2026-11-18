@@ -33,6 +33,8 @@
 
 #include "localization/localization_loader.h"
 #include "localization/localization_matcher.h"
+#include "localization/localization_project.h"
+#include "localization/localization_tm.h"
 
 #include <libaegisub/fs.h>
 #include <libaegisub/exception.h>
@@ -41,12 +43,14 @@
 
 #include <algorithm>
 #include <cmath>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
 
 #include <wx/checkbox.h>
 #include <wx/button.h>
+#include <wx/colour.h>
 #include <wx/combobox.h>
 #include <wx/filedlg.h>
 #include <wx/listbox.h>
@@ -56,6 +60,7 @@
 #include <wx/spinctrl.h>
 #include <wx/stattext.h>
 #include <wx/textctrl.h>
+#include <wx/timer.h>
 
 namespace {
 
@@ -76,27 +81,6 @@ std::string AssEscapeNewlines(std::string s) {
 	return ReplaceAll(std::move(s), "\n", "\\N");
 }
 
-std::string PathUtf8(agi::fs::path const& path) {
-	return from_wx(wxString(path.wstring()));
-}
-
-std::string ReadLocalizationFile(agi::fs::path const& path, std::string& error) {
-	try {
-		std::string encoding = CharSetDetect::GetEncoding(path);
-		TextFileReader reader(path, encoding, false);
-		std::string content;
-		while (reader.HasMoreLines()) {
-			content += reader.ReadLineFromFile();
-			content += "\n";
-		}
-		return content;
-	}
-	catch (agi::Exception const& e) {
-		error = e.GetMessage();
-		return {};
-	}
-}
-
 } // namespace
 
 struct DialogLocalization::Impl {
@@ -110,6 +94,11 @@ struct DialogLocalization::Impl {
 	std::vector<agi::fs::path> paths;
 	std::vector<localization::LocalizationFile> files;
 	std::vector<localization::MatchResult> results;
+	localization::MatchContext match_context;
+	std::map<std::string, localization::FileRole> file_roles;
+	std::string loaded_file_signature;
+	localization::TranslationMemory tm;
+	agi::fs::path tm_path;
 	bool updating = false;
 
 	wxTextCtrl *original_text = nullptr;
@@ -117,12 +106,18 @@ struct DialogLocalization::Impl {
 	wxCheckBox *tags_check = nullptr;
 	wxCheckBox *punct_check = nullptr;
 	wxCheckBox *case_check = nullptr;
+	wxCheckBox *hide_language_check = nullptr;
 	wxCheckBox *sentence_check = nullptr;
 	wxCheckBox *clean_check = nullptr;
+	wxCheckBox *tm_check = nullptr;
 	wxTextCtrl *regex_ctrl = nullptr;
+	wxTextCtrl *key_regex_ctrl = nullptr;
+	wxColour regex_bg;
+	wxColour key_regex_bg;
 	wxComboBox *language_combo = nullptr;
 	wxSpinCtrlDouble *threshold_spin = nullptr;
 	wxListBox *files_box = nullptr;
+	wxComboBox *role_combo = nullptr;
 	wxListCtrl *results_list = nullptr;
 	wxStaticText *status = nullptr;
 	wxButton *replace_button = nullptr;
@@ -130,23 +125,34 @@ struct DialogLocalization::Impl {
 	wxButton *copy_button = nullptr;
 
 	std::unique_ptr<PersistLocation> persist;
+	std::unique_ptr<wxTimer> refresh_timer;
 
 	Impl(DialogLocalization *dialog, agi::Context *c);
+	~Impl();
 
 	localization::MatchOptions CurrentOptions() const;
 	void SaveOptions();
 	void LoadPersistedFiles();
+	void LoadRoles();
+	void SaveRoles();
 	void LoadFiles();
 	void UpdateFilesBox();
+	void UpdateRoleCombo();
 	void UpdateDisplay();
 	void RefreshMatch();
+	void ScheduleRefresh();
+	void OnRefreshTimer(wxTimerEvent&);
 	void UpdateStatus();
 	void OnActiveLineChanged(AssDialogue *line);
 	void OnExternalCommit(int commit_type);
 	void OnAddFiles(wxCommandEvent&);
 	void OnRemoveFile(wxCommandEvent&);
 	void OnClearFiles(wxCommandEvent&);
+	void OnReloadFiles(wxCommandEvent&);
+	void OnFileSelected(wxCommandEvent&);
+	void OnRoleChanged(wxCommandEvent&);
 	void OnOptionsChanged(wxCommandEvent&);
+	void ValidateRegexControls();
 	void OnListActivated(wxListEvent&);
 	void OnReplace(wxCommandEvent&);
 	void OnInsert(wxCommandEvent&);
@@ -185,6 +191,12 @@ DialogLocalization::Impl::Impl(DialogLocalization *dialog, agi::Context *c)
 	auto flags_row2 = new wxBoxSizer(wxHORIZONTAL);
 	flags_row2->Add(punct_check, 0, wxRIGHT | wxALIGN_CENTER_VERTICAL, 8);
 	flags_row2->Add(case_check, 0, wxRIGHT | wxALIGN_CENTER_VERTICAL, 8);
+	hide_language_check = new wxCheckBox(dialog, -1,
+		_("Hide source-language results"));
+	hide_language_check->SetToolTip(_(
+		"Hide matches in the current line's language when a result in another "
+		"language is available. Matches in the preferred language are kept."));
+	flags_row2->Add(hide_language_check, 0, wxRIGHT | wxALIGN_CENTER_VERTICAL, 8);
 	flags_row2->AddStretchSpacer();
 	options_box->Add(flags_row2, 0, wxEXPAND | wxALL, 4);
 
@@ -221,6 +233,20 @@ DialogLocalization::Impl::Impl(DialogLocalization *dialog, agi::Context *c)
 	options_sizer2->Add(regex_ctrl, 1, wxALIGN_CENTER_VERTICAL);
 	options_box->Add(options_sizer2, 0, wxEXPAND | wxALL, 4);
 
+	// Row 5: entry key extraction from line fields.
+	auto key_sizer = new wxBoxSizer(wxHORIZONTAL);
+	key_sizer->Add(new wxStaticText(dialog, -1, _("Key regex:")),
+		0, wxRIGHT | wxALIGN_CENTER_VERTICAL, 4);
+	key_regex_ctrl = new wxTextCtrl(dialog, -1, "", wxDefaultPosition, wxDefaultSize);
+	key_regex_ctrl->SetToolTip(_(
+		"Extract localization keys from the line's Actor, Effect, Style and "
+		"text fields. The first capture group is used; empty disables key "
+		"extraction."));
+	key_sizer->Add(key_regex_ctrl, 1, wxALIGN_CENTER_VERTICAL);
+	regex_bg = regex_ctrl->GetBackgroundColour();
+	key_regex_bg = key_regex_ctrl->GetBackgroundColour();
+	options_box->Add(key_sizer, 0, wxEXPAND | wxALL, 4);
+
 	// Row 4: clean result preference (only has an effect while a split regex
 	// is configured).
 	clean_check = new wxCheckBox(dialog, -1,
@@ -229,19 +255,43 @@ DialogLocalization::Impl::Impl(DialogLocalization *dialog, agi::Context *c)
 		"When a split regex is set, list results whose localized text contains "
 		"no match of that regex first, so cleaned segments are preferred over "
 		"results that still carry the unsplit tag text."));
-	options_box->Add(clean_check, 0, wxLEFT | wxRIGHT | wxBOTTOM, 4);
+	tm_check = new wxCheckBox(dialog, -1,
+		_("Use project translation memory"));
+	tm_check->SetToolTip(_(
+		"Include the current script's existing lines and the translation "
+		"memory of accepted matches."));
+	auto tm_row = new wxBoxSizer(wxHORIZONTAL);
+	tm_row->Add(clean_check, 0, wxRIGHT | wxALIGN_CENTER_VERTICAL, 12);
+	tm_row->Add(tm_check, 0, wxALIGN_CENTER_VERTICAL);
+	tm_row->AddStretchSpacer();
+	options_box->Add(tm_row, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, 4);
 	main_sizer->Add(options_box, 0, wxEXPAND | wxLEFT | wxRIGHT, 5);
 
 	auto files_box_sizer = new wxStaticBoxSizer(wxVERTICAL, dialog, _("Localization files"));
 	files_box = new wxListBox(dialog, -1, wxDefaultPosition, wxSize(-1, 90));
 	auto file_buttons = new wxBoxSizer(wxHORIZONTAL);
 	auto add_button = new wxButton(dialog, -1, _("Add Files..."));
+	auto reload_button = new wxButton(dialog, -1, _("Reload"));
 	auto remove_button = new wxButton(dialog, -1, _("Remove"));
 	auto clear_button = new wxButton(dialog, -1, _("Clear"));
 	file_buttons->Add(add_button, 0, wxRIGHT, 4);
+	file_buttons->Add(reload_button, 0, wxRIGHT, 4);
 	file_buttons->Add(remove_button, 0, wxRIGHT, 4);
 	file_buttons->Add(clear_button, 0);
 	files_box_sizer->Add(files_box, 1, wxEXPAND | wxALL, 4);
+
+	auto role_row = new wxBoxSizer(wxHORIZONTAL);
+	role_row->Add(new wxStaticText(dialog, -1, _("Role:")),
+		0, wxRIGHT | wxALIGN_CENTER_VERTICAL, 4);
+	role_combo = new wxComboBox(dialog, -1, "", wxDefaultPosition, wxSize(100, -1),
+		wxArrayString(), wxCB_READONLY);
+	role_combo->Append(_("Auto"));
+	role_combo->Append(_("Source"));
+	role_combo->Append(_("Target"));
+	role_combo->SetSelection(0);
+	role_row->Add(role_combo, 0, wxALIGN_CENTER_VERTICAL);
+	role_row->AddStretchSpacer();
+	files_box_sizer->Add(role_row, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, 4);
 	files_box_sizer->Add(file_buttons, 0, wxLEFT | wxRIGHT | wxBOTTOM, 4);
 	main_sizer->Add(files_box_sizer, 0, wxEXPAND | wxLEFT | wxRIGHT, 5);
 
@@ -289,18 +339,28 @@ DialogLocalization::Impl::Impl(DialogLocalization *dialog, agi::Context *c)
 	dialog->CenterOnParent();
 
 	persist = agi::make_unique<PersistLocation>(dialog, "Tool/Localization");
+	tm_path = config::path->Decode("?user/localization-tm.tsv");
+	tm.Load(tm_path);
+	refresh_timer = agi::make_unique<wxTimer>(dialog);
+	dialog->Bind(wxEVT_TIMER, &Impl::OnRefreshTimer, this);
 
 	fuzzy_check->SetValue(OPT_GET("Tool/Localization/Fuzzy")->GetBool());
 	tags_check->SetValue(OPT_GET("Tool/Localization/Ignore Tags")->GetBool());
 	punct_check->SetValue(OPT_GET("Tool/Localization/Ignore Punctuation")->GetBool());
 	case_check->SetValue(OPT_GET("Tool/Localization/Ignore Case")->GetBool());
+	hide_language_check->SetValue(
+		OPT_GET("Tool/Localization/Hide Source Language")->GetBool());
 	threshold_spin->SetValue(OPT_GET("Tool/Localization/Threshold")->GetDouble());
 	language_combo->SetValue(to_wx(OPT_GET("Tool/Localization/Language")->GetString()));
 	sentence_check->SetValue(OPT_GET("Tool/Localization/Split Sentences")->GetBool());
 	regex_ctrl->SetValue(to_wx(OPT_GET("Tool/Localization/Split Regex")->GetString()));
+	key_regex_ctrl->SetValue(to_wx(OPT_GET("Tool/Localization/Key Regex")->GetString()));
 	clean_check->SetValue(OPT_GET("Tool/Localization/Prefer Without Split Regex")->GetBool());
+	tm_check->SetValue(OPT_GET("Tool/Localization/Use Project TM")->GetBool());
+	ValidateRegexControls();
 
 	add_button->Bind(wxEVT_BUTTON, &Impl::OnAddFiles, this);
+	reload_button->Bind(wxEVT_BUTTON, &Impl::OnReloadFiles, this);
 	remove_button->Bind(wxEVT_BUTTON, &Impl::OnRemoveFile, this);
 	clear_button->Bind(wxEVT_BUTTON, &Impl::OnClearFiles, this);
 	replace_button->Bind(wxEVT_BUTTON, &Impl::OnReplace, this);
@@ -310,16 +370,27 @@ DialogLocalization::Impl::Impl(DialogLocalization *dialog, agi::Context *c)
 	tags_check->Bind(wxEVT_CHECKBOX, &Impl::OnOptionsChanged, this);
 	punct_check->Bind(wxEVT_CHECKBOX, &Impl::OnOptionsChanged, this);
 	case_check->Bind(wxEVT_CHECKBOX, &Impl::OnOptionsChanged, this);
+	hide_language_check->Bind(wxEVT_CHECKBOX, &Impl::OnOptionsChanged, this);
 	threshold_spin->Bind(wxEVT_SPINCTRLDOUBLE, &Impl::OnOptionsChanged, this);
 	language_combo->Bind(wxEVT_COMBOBOX, &Impl::OnOptionsChanged, this);
 	sentence_check->Bind(wxEVT_CHECKBOX, &Impl::OnOptionsChanged, this);
 	regex_ctrl->Bind(wxEVT_TEXT, &Impl::OnOptionsChanged, this);
+	key_regex_ctrl->Bind(wxEVT_TEXT, &Impl::OnOptionsChanged, this);
 	clean_check->Bind(wxEVT_CHECKBOX, &Impl::OnOptionsChanged, this);
+	tm_check->Bind(wxEVT_CHECKBOX, &Impl::OnOptionsChanged, this);
 	results_list->Bind(wxEVT_LIST_ITEM_ACTIVATED, &Impl::OnListActivated, this);
+	files_box->Bind(wxEVT_LISTBOX, &Impl::OnFileSelected, this);
+	role_combo->Bind(wxEVT_COMBOBOX, &Impl::OnRoleChanged, this);
 
 	LoadPersistedFiles();
+	LoadRoles();
 	LoadFiles();
 	UpdateDisplay();
+}
+
+DialogLocalization::Impl::~Impl() {
+	if (refresh_timer)
+		refresh_timer->Stop();
 }
 
 localization::MatchOptions DialogLocalization::Impl::CurrentOptions() const {
@@ -332,62 +403,40 @@ localization::MatchOptions DialogLocalization::Impl::CurrentOptions() const {
 	options.preferred_language = from_wx(language_combo->GetValue());
 	options.split_sentences = sentence_check->GetValue();
 	options.split_regex = from_wx(regex_ctrl->GetValue());
+	options.key_regex = from_wx(key_regex_ctrl->GetValue());
 	options.prefer_without_split_regex = clean_check->GetValue();
+	options.hide_source_language = hide_language_check->GetValue();
+	options.use_project_tm = tm_check->GetValue();
 	return options;
 }
 
 void DialogLocalization::Impl::SaveOptions() {
-	OPT_SET("Tool/Localization/Fuzzy")->SetBool(fuzzy_check->GetValue());
-	OPT_SET("Tool/Localization/Ignore Tags")->SetBool(tags_check->GetValue());
-	OPT_SET("Tool/Localization/Ignore Punctuation")->SetBool(punct_check->GetValue());
-	OPT_SET("Tool/Localization/Ignore Case")->SetBool(case_check->GetValue());
-	OPT_SET("Tool/Localization/Threshold")->SetDouble(threshold_spin->GetValue());
-	OPT_SET("Tool/Localization/Language")->SetString(from_wx(language_combo->GetValue()));
-	OPT_SET("Tool/Localization/Split Sentences")->SetBool(sentence_check->GetValue());
-	OPT_SET("Tool/Localization/Split Regex")->SetString(from_wx(regex_ctrl->GetValue()));
-	OPT_SET("Tool/Localization/Prefer Without Split Regex")->SetBool(clean_check->GetValue());
+	localization::SaveMatchOptions(CurrentOptions());
+	SaveRoles();
 
 	std::string joined;
 	for (auto const& path : paths) {
 		if (!joined.empty()) joined += "\n";
-		joined += PathUtf8(path);
+		joined += localization::PathUtf8(path);
 	}
 	OPT_SET("Tool/Localization/Files")->SetString(joined);
 }
 
 void DialogLocalization::Impl::LoadPersistedFiles() {
-	std::string saved = OPT_GET("Tool/Localization/Files")->GetString();
-	size_t start = 0;
-	while (start <= saved.size()) {
-		size_t end = saved.find('\n', start);
-		if (end == std::string::npos) end = saved.size();
-		std::string item = saved.substr(start, end - start);
-		if (!item.empty()) {
-			wxString wide = to_wx(item);
-			agi::fs::path path(std::wstring(wide.wc_str()));
-			if (agi::fs::FileExists(path)) paths.push_back(path);
-		}
-		if (end == saved.size()) break;
-		start = end + 1;
-	}
+	paths = localization::ReadPersistedPaths();
+}
+
+void DialogLocalization::Impl::LoadRoles() {
+	file_roles = localization::ReadFileRoles();
+}
+
+void DialogLocalization::Impl::SaveRoles() {
+	localization::SaveFileRoles(file_roles);
 }
 
 void DialogLocalization::Impl::LoadFiles() {
-	files.clear();
-	for (auto const& path : paths) {
-		localization::LocalizationFile file;
-		file.name = PathUtf8(path.filename());
-		std::string error;
-		std::string content = ReadLocalizationFile(path, error);
-		if (!error.empty()) {
-			file.ok = false;
-			file.error = error;
-		}
-		else {
-			file = localization::LoadContent(content, file.name, PathUtf8(path.extension()));
-		}
-		files.push_back(std::move(file));
-	}
+	files = localization::LoadFiles(paths, file_roles);
+	loaded_file_signature = localization::FileSignature(paths);
 	UpdateFilesBox();
 	RefreshMatch();
 }
@@ -395,11 +444,56 @@ void DialogLocalization::Impl::LoadFiles() {
 void DialogLocalization::Impl::UpdateFilesBox() {
 	files_box->Clear();
 	for (size_t i = 0; i < paths.size(); ++i) {
-		wxString label = to_wx(PathUtf8(paths[i]));
+		wxString label = to_wx(localization::PathUtf8(paths[i]));
 		if (i < files.size() && !files[i].ok)
 			label += _("  [failed to load]");
 		files_box->Append(label);
 	}
+	UpdateRoleCombo();
+}
+
+void DialogLocalization::Impl::UpdateRoleCombo() {
+	int sel = files_box->GetSelection();
+	if (sel == wxNOT_FOUND || static_cast<size_t>(sel) >= paths.size()) {
+		role_combo->SetSelection(0);
+		return;
+	}
+	std::string path = localization::PathUtf8(paths[static_cast<size_t>(sel)]);
+	auto role = file_roles.find(path);
+	if (role == file_roles.end() ||
+		role->second == localization::FileRole::Auto)
+		role_combo->SetSelection(0);
+	else if (role->second == localization::FileRole::Source)
+		role_combo->SetSelection(1);
+	else
+		role_combo->SetSelection(2);
+}
+
+void DialogLocalization::Impl::OnFileSelected(wxCommandEvent&) {
+	UpdateRoleCombo();
+}
+
+void DialogLocalization::Impl::OnRoleChanged(wxCommandEvent&) {
+	int sel = files_box->GetSelection();
+	if (sel == wxNOT_FOUND || static_cast<size_t>(sel) >= paths.size()) return;
+
+	auto role = localization::FileRole::Auto;
+	if (role_combo->GetSelection() == 1)
+		role = localization::FileRole::Source;
+	else if (role_combo->GetSelection() == 2)
+		role = localization::FileRole::Target;
+
+	std::string path = localization::PathUtf8(paths[static_cast<size_t>(sel)]);
+	if (role == localization::FileRole::Auto)
+		file_roles.erase(path);
+	else
+		file_roles[path] = role;
+	if (static_cast<size_t>(sel) < files.size())
+		files[static_cast<size_t>(sel)].role = role;
+
+	match_context.anchor_file = static_cast<size_t>(-1);
+	SaveOptions();
+	ScheduleRefresh();
 }
 
 void DialogLocalization::Impl::OnActiveLineChanged(AssDialogue *line) {
@@ -421,6 +515,15 @@ void DialogLocalization::Impl::UpdateDisplay() {
 	else
 		original_text->SetValue(_("No active subtitle line."));
 
+	ScheduleRefresh();
+}
+
+void DialogLocalization::Impl::ScheduleRefresh() {
+	if (refresh_timer)
+		refresh_timer->StartOnce(200);
+}
+
+void DialogLocalization::Impl::OnRefreshTimer(wxTimerEvent&) {
 	RefreshMatch();
 }
 
@@ -428,11 +531,45 @@ void DialogLocalization::Impl::RefreshMatch() {
 	if (updating) return;
 	updating = true;
 
+	if (localization::FileSignature(paths) != loaded_file_signature) {
+		updating = false;
+		LoadFiles();
+		return;
+	}
+
 	results_list->DeleteAllItems();
 	results.clear();
 
 	if (active_line) {
-		results = localization::Match(active_line->GetStrippedText(), files, CurrentOptions());
+		auto options = CurrentOptions();
+		auto keys = GetLocalizationLineKeys(active_line, options.key_regex);
+		match_context.actor = active_line->Actor.get();
+
+		// Normalize and segment the loaded files once per option change rather
+		// than on every query.
+		localization::Prepare(files, options);
+		std::vector<localization::LocalizationFile> matcher_files = files;
+		if (options.use_project_tm) {
+			localization::LocalizationFile script;
+			script.name = "current script";
+			script.language = options.preferred_language;
+			script.role = localization::FileRole::Target;
+			script.synthetic = true;
+			for (auto const& line : c->ass->Events) {
+				std::string text = line.Text.get();
+				if (text.empty()) continue;
+				std::string language = localization::DetectLanguage(text);
+				if (language.empty() || language == options.preferred_language)
+					script.items.push_back({"", text, script.name});
+			}
+			matcher_files.push_back(std::move(script));
+			if (!tm.entries.empty())
+				matcher_files.push_back(tm.BuildFile("translation memory",
+					options.preferred_language));
+		}
+
+		results = localization::Match(active_line->GetStrippedText(),
+			matcher_files, options, keys, match_context);
 		for (size_t i = 0; i < results.size(); ++i) {
 			auto const& r = results[i];
 			long row = results_list->GetItemCount();
@@ -484,6 +621,7 @@ void DialogLocalization::Impl::OnAddFiles(wxCommandEvent&) {
 			if (existing == p) exists = true;
 		if (!exists) paths.push_back(p);
 	}
+	match_context.anchor_file = static_cast<size_t>(-1);
 	SaveOptions();
 	LoadFiles();
 }
@@ -491,7 +629,9 @@ void DialogLocalization::Impl::OnAddFiles(wxCommandEvent&) {
 void DialogLocalization::Impl::OnRemoveFile(wxCommandEvent&) {
 	int sel = files_box->GetSelection();
 	if (sel == wxNOT_FOUND || sel >= static_cast<int>(paths.size())) return;
+	file_roles.erase(localization::PathUtf8(paths[static_cast<size_t>(sel)]));
 	paths.erase(paths.begin() + sel);
+	match_context.anchor_file = static_cast<size_t>(-1);
 	SaveOptions();
 	LoadFiles();
 }
@@ -499,13 +639,37 @@ void DialogLocalization::Impl::OnRemoveFile(wxCommandEvent&) {
 void DialogLocalization::Impl::OnClearFiles(wxCommandEvent&) {
 	if (paths.empty()) return;
 	paths.clear();
+	file_roles.clear();
+	match_context.anchor_file = static_cast<size_t>(-1);
 	SaveOptions();
 	LoadFiles();
 }
 
-void DialogLocalization::Impl::OnOptionsChanged(wxCommandEvent&) {
+void DialogLocalization::Impl::OnReloadFiles(wxCommandEvent&) {
+	match_context.anchor_file = static_cast<size_t>(-1);
+	LoadFiles();
+}
+
+void DialogLocalization::Impl::ValidateRegexControls() {
+	auto mark = [](wxTextCtrl *ctrl, wxColour const& background,
+		std::string const& pattern) {
+		bool valid = localization::IsValidRegex(pattern);
+		ctrl->SetBackgroundColour(valid ? background : wxColour(255, 214, 214));
+		ctrl->Refresh();
+	};
+	mark(regex_ctrl, regex_bg, from_wx(regex_ctrl->GetValue()));
+	mark(key_regex_ctrl, key_regex_bg,
+		from_wx(key_regex_ctrl->GetValue()));
+}
+
+void DialogLocalization::Impl::OnOptionsChanged(wxCommandEvent& event) {
+	if (event.GetEventObject() == tm_check)
+		match_context.anchor_file = static_cast<size_t>(-1);
+	if (event.GetEventObject() == regex_ctrl ||
+		event.GetEventObject() == key_regex_ctrl)
+		ValidateRegexControls();
 	SaveOptions();
-	RefreshMatch();
+	ScheduleRefresh();
 }
 
 void DialogLocalization::Impl::OnListActivated(wxListEvent&) {
@@ -528,9 +692,24 @@ void DialogLocalization::Impl::OnReplace(wxCommandEvent&) {
 		return;
 	}
 
-	line->Text = AssEscapeNewlines(results[static_cast<size_t>(sel)].replacement);
+	auto const& selected = results[static_cast<size_t>(sel)];
+	match_context.anchor_file = selected.file_index;
+	match_context.anchor_position = selected.position;
+	std::string source = line->GetStrippedText();
+	std::string replacement = selected.replacement;
+	line->Text = AssEscapeNewlines(replacement);
 	c->ass->Commit(_("replace line with localization result"),
 		AssFile::COMMIT_DIAG_TEXT, -1, line);
+
+	if (CurrentOptions().use_project_tm) {
+		tm.Append(std::move(source), std::move(replacement));
+		try {
+			tm.Save(tm_path);
+		}
+		catch (agi::Exception const&) {
+			// A read-only profile should not break matching.
+		}
+	}
 }
 
 void DialogLocalization::Impl::OnInsert(wxCommandEvent&) {

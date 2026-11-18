@@ -63,7 +63,7 @@ bool ContainsCjk(std::string const& s) {
 /// Guess the dominant language of a UTF-8 text by script frequency.
 /// Returns a stable display name ("中文", "English", ...) or an empty string
 /// when no supported script is found.
-std::string DetectLanguage(std::string const& text) {
+std::string DetectLanguageImpl(std::string const& text) {
 	size_t han = 0;
 	size_t kana = 0;
 	size_t hangul = 0;
@@ -141,11 +141,12 @@ std::string StripQuotes(std::string s) {
 	return s;
 }
 
-void AddItem(LocalizationFile& f, std::string key, std::string text) {
+void AddItem(LocalizationFile& f, std::string key, std::string text,
+	TextRole role = TextRole::Unknown) {
 	key = Trim(std::move(key));
 	text = Trim(std::move(text));
 	if (text.empty()) return;
-	f.items.push_back({std::move(key), std::move(text), f.name});
+	f.items.push_back({std::move(key), std::move(text), f.name, role});
 }
 
 void AddPair(LocalizationFile& f, std::string key, std::string source,
@@ -155,9 +156,10 @@ void AddPair(LocalizationFile& f, std::string key, std::string source,
 	translation = Trim(std::move(translation));
 	if (source.empty() || translation.empty() || source == translation) return;
 	f.pairs.push_back({std::move(key), source, translation, f.name});
-	// Also expose both sides as plain items so text/key matching is uniform
-	AddItem(f, f.pairs.back().key, source);
-	AddItem(f, f.pairs.back().key, translation);
+	// Expose both sides as plain items so text/key matching is uniform. The
+	// role keeps the source side from ever being offered as a translation.
+	AddItem(f, f.pairs.back().key, source, TextRole::Source);
+	AddItem(f, f.pairs.back().key, translation, TextRole::Translation);
 }
 
 template<typename T>
@@ -253,8 +255,18 @@ void WalkJson(LocalizationFile& f, json::UnknownElement const& el,
 	}
 
 	if (auto const* array = TryCastRef<json::Array>(el)) {
-		for (auto const& child : *array)
-			WalkJson(f, child, path, depth + 1);
+		// Give every element a stable positional key so the same index can be
+		// paired with the translated array in another file. Without it all
+		// elements share one key and cross-file alignment degenerates into a
+		// cross product.
+		size_t index = 0;
+		for (auto const& child : *array) {
+			std::string child_path = path.empty()
+				? std::to_string(index)
+				: path + "#" + std::to_string(index);
+			WalkJson(f, child, child_path, depth + 1);
+			++index;
+		}
 		return;
 	}
 
@@ -271,8 +283,11 @@ void WalkJson(LocalizationFile& f, json::UnknownElement const& el,
 			break;
 		}
 	}
+	// Bilingual records without an explicit key fall back to their path so
+	// array elements and nested objects can still be paired across files.
+	std::string pair_key = record_key.empty() ? path : record_key;
 	if (all_strings && object.size() >= 2 &&
-		TryParseBilingualObject(f, object, record_key))
+		TryParseBilingualObject(f, object, pair_key))
 		return;
 
 	if (!record_key.empty()) {
@@ -477,6 +492,10 @@ void ParseKeyValue(LocalizationFile& f, std::string const& content) {
 }
 
 } // namespace
+
+std::string DetectLanguage(std::string const& text) {
+	return DetectLanguageImpl(text);
+}
 
 LocalizationFile LoadContent(std::string const& content,
 	std::string const& name, std::string const& ext) {

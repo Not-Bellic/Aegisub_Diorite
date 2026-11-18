@@ -22,6 +22,11 @@ namespace localization {
 /// escapes, whitespace, and optionally punctuation and case.
 std::string Normalize(std::string text, MatchOptions const& options);
 
+/// Build or refresh the per-file normalization/segmentation cache used by
+/// Match(). Call this when the matching options change so the work is done
+/// once instead of on every query.
+void Prepare(std::vector<LocalizationFile>& files, MatchOptions const& options);
+
 /// Similarity between two already-normalized strings, 0..1
 /// (1 - normalized Levenshtein distance).
 double Similarity(std::string const& a, std::string const& b);
@@ -35,5 +40,14 @@ double Similarity(std::string const& a, std::string const& b);
 ///                        the matched text is removed from the segments
 std::vector<std::string> SplitSegments(std::string const& text,
 	bool split_sentences = true, std::string const& split_regex = {});
+
+/// Extract candidate entry keys from a line field with a regular expression.
+/// The first capture group is used when present, otherwise the whole match.
+/// Invalid patterns and empty matches are ignored.
+std::vector<std::string> ExtractKeys(std::string const& text,
+	std::string const& regex);
+
+/// True when the pattern compiles, or when it is empty (disabled).
+bool IsValidRegex(std::string const& pattern);
 
 } // namespace localization

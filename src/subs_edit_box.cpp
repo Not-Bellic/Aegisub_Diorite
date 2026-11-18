@@ -52,6 +52,7 @@
 #include "initial_line_state.h"
 #include "localization/localization_loader.h"
 #include "localization/localization_matcher.h"
+#include "localization/localization_project.h"
 #include "options.h"
 #include "placeholder_ctrl.h"
 #include "project.h"
@@ -75,6 +76,7 @@
 #include <cmath>
 #include <iterator>
 #include <functional>
+#include <map>
 #include <set>
 #include <unordered_set>
 #include <vector>
@@ -140,79 +142,29 @@ std::string AssEscapeNewlines(std::string s) {
 	return ReplaceAll(std::move(s), "\n", "\\N");
 }
 
-std::string PathUtf8(agi::fs::path const& path) {
-	return from_wx(wxString(path.wstring()));
-}
-
-std::string ReadLocalizationFile(agi::fs::path const& path, std::string& error) {
-	try {
-		std::string encoding = CharSetDetect::GetEncoding(path);
-		TextFileReader reader(path, encoding, false);
-		std::string content;
-		while (reader.HasMoreLines()) {
-			content += reader.ReadLineFromFile();
-			content += "\n";
-		}
-		return content;
-	}
-	catch (agi::Exception const& e) {
-		error = e.GetMessage();
-		return {};
-	}
-}
-
-/// Localization files saved in the Localization Match dialog options.
-std::vector<agi::fs::path> GetLocalizationPaths() {
-	std::vector<agi::fs::path> paths;
-	std::string saved = OPT_GET("Tool/Localization/Files")->GetString();
-	size_t start = 0;
-	while (start <= saved.size()) {
-		size_t end = saved.find('\n', start);
-		if (end == std::string::npos) end = saved.size();
-		std::string item = saved.substr(start, end - start);
-		if (!item.empty()) {
-			wxString wide = to_wx(item);
-			agi::fs::path path(std::wstring(wide.wc_str()));
-			if (agi::fs::FileExists(path)) paths.push_back(path);
-		}
-		if (end == saved.size()) break;
-		start = end + 1;
-	}
-	return paths;
-}
-
 localization::MatchOptions GetLocalizationOptions() {
-	localization::MatchOptions options;
-	options.fuzzy = OPT_GET("Tool/Localization/Fuzzy")->GetBool();
-	options.ignore_tags = OPT_GET("Tool/Localization/Ignore Tags")->GetBool();
-	options.ignore_punctuation = OPT_GET("Tool/Localization/Ignore Punctuation")->GetBool();
-	options.ignore_case = OPT_GET("Tool/Localization/Ignore Case")->GetBool();
-	options.threshold = OPT_GET("Tool/Localization/Threshold")->GetDouble();
-	options.preferred_language = OPT_GET("Tool/Localization/Language")->GetString();
-	options.split_sentences = OPT_GET("Tool/Localization/Split Sentences")->GetBool();
-	options.split_regex = OPT_GET("Tool/Localization/Split Regex")->GetString();
-	options.prefer_without_split_regex =
-		OPT_GET("Tool/Localization/Prefer Without Split Regex")->GetBool();
-	return options;
+	return localization::ReadMatchOptions();
 }
 
-std::vector<localization::LocalizationFile> LoadLocalizationFiles(std::vector<agi::fs::path> const& paths) {
-	std::vector<localization::LocalizationFile> files;
-	for (auto const& path : paths) {
-		localization::LocalizationFile file;
-		file.name = PathUtf8(path.filename());
-		std::string error;
-		std::string content = ReadLocalizationFile(path, error);
-		if (!error.empty()) {
-			file.ok = false;
-			file.error = error;
-		}
-		else {
-			file = localization::LoadContent(content, file.name, PathUtf8(path.extension()));
-		}
-		files.push_back(std::move(file));
-	}
-	return files;
+std::vector<std::string> GetLocalizationLineKeys(AssDialogue const* line,
+	std::string const& regex) {
+	std::vector<std::string> keys;
+	if (!line || regex.empty()) return keys;
+
+	auto add = [&](std::string const& field) {
+		for (auto& key : localization::ExtractKeys(field, regex))
+			keys.push_back(std::move(key));
+	};
+	add(line->Actor.get());
+	add(line->Effect.get());
+	add(line->Style.get());
+	add(line->Text.get());
+	return keys;
+}
+
+std::vector<localization::LocalizationFile> LoadLocalizationFiles(
+	std::vector<agi::fs::path> const& paths) {
+	return localization::LoadFiles(paths, localization::ReadFileRoles());
 }
 
 // Passing a pointer-to-member directly to a function sometimes does not work
@@ -526,6 +478,7 @@ SubsEditBox::SubsEditBox(wxWindow *parent, agi::Context *context)
 	if (show_localization) {
 		localization_box->SetValue(true);
 		DoLocalizationToggle(true);
+		RefreshLocalizationMatches();
 	}
 }
 
@@ -1318,6 +1271,8 @@ void SubsEditBox::OnActiveLineChanged(AssDialogue *new_line) {
 	if (actor_mru_manager_)
 		actor_mru_manager_->UpdateWindowVisibility();
 	// [actor_MRU] END
+	if (localization_box && localization_box->IsChecked())
+		RefreshLocalizationMatches();
 }
 
 void SubsEditBox::OnSelectedSetChanged() {
@@ -1552,6 +1507,8 @@ void SubsEditBox::OnLocalizationToggle(wxCommandEvent&) {
 	bool show = localization_box->IsChecked();
 	DoLocalizationToggle(show);
 	OPT_SET("Subtitle/Localization Match")->SetBool(show);
+	if (show)
+		RefreshLocalizationMatches();
 }
 
 void SubsEditBox::OnLocalizationRefresh(wxCommandEvent&) {
@@ -1571,11 +1528,14 @@ void SubsEditBox::DoLocalizationToggle(bool show) {
 void SubsEditBox::RefreshLocalizationMatches() {
 	if (!localization_box || !localization_box->IsChecked() || !c) return;
 
-	auto paths = GetLocalizationPaths();
-	std::string signature = OPT_GET("Tool/Localization/Files")->GetString();
+	auto paths = localization::ReadPersistedPaths();
+	std::string signature = localization::FileSignature(paths) +
+		"\n" + OPT_GET("Tool/Localization/Roles")->GetString() +
+		"\n" + (OPT_GET("Tool/Localization/Use Project TM")->GetBool() ? "1" : "0");
 	if (signature != localization_files_signature_) {
 		localization_files_ = LoadLocalizationFiles(paths);
 		localization_files_signature_ = signature;
+		localization_anchor_file_ = static_cast<size_t>(-1);
 	}
 
 	localization_results_.clear();
@@ -1584,7 +1544,40 @@ void SubsEditBox::RefreshLocalizationMatches() {
 	AssDialogue *cur = c->selectionController->GetActiveLine();
 	if (cur) {
 		auto options = GetLocalizationOptions();
-		localization_results_ = localization::Match(cur->GetStrippedText(), localization_files_, options);
+		auto keys = GetLocalizationLineKeys(cur, options.key_regex);
+		localization::MatchContext context;
+		context.anchor_file = localization_anchor_file_;
+		context.anchor_position = localization_anchor_position_;
+		context.actor = cur->Actor.get();
+
+		localization::Prepare(localization_files_, options);
+		std::vector<localization::LocalizationFile> matcher_files = localization_files_;
+		if (options.use_project_tm) {
+			if (!localization_tm_loaded_) {
+				localization_tm_.Load(config::path->Decode(
+					"?user/localization-tm.tsv"));
+				localization_tm_loaded_ = true;
+			}
+			localization::LocalizationFile script;
+			script.name = "current script";
+			script.language = options.preferred_language;
+			script.role = localization::FileRole::Target;
+			script.synthetic = true;
+			for (auto const& line : c->ass->Events) {
+				std::string text = line.Text.get();
+				if (text.empty()) continue;
+				std::string language = localization::DetectLanguage(text);
+				if (language.empty() || language == options.preferred_language)
+					script.items.push_back({"", text, script.name});
+			}
+			matcher_files.push_back(std::move(script));
+			if (!localization_tm_.entries.empty())
+				matcher_files.push_back(localization_tm_.BuildFile(
+					"translation memory", options.preferred_language));
+		}
+
+		localization_results_ = localization::Match(cur->GetStrippedText(),
+			matcher_files, options, keys, context);
 		for (size_t i = 0; i < localization_results_.size(); ++i) {
 			auto const& r = localization_results_[i];
 			wxString label = wxString::Format("%d%%",
@@ -1625,8 +1618,24 @@ void SubsEditBox::OnLocalizationReplace(wxCommandEvent&) {
 	AssDialogue *cur = c->selectionController->GetActiveLine();
 	if (!cur) return;
 
-	cur->Text = AssEscapeNewlines(localization_results_[static_cast<size_t>(sel)].replacement);
+	auto const& selected = localization_results_[static_cast<size_t>(sel)];
+	localization_anchor_file_ = selected.file_index;
+	localization_anchor_position_ = selected.position;
+	std::string source = cur->GetStrippedText();
+	std::string replacement = selected.replacement;
+	cur->Text = AssEscapeNewlines(replacement);
 	c->ass->Commit(_("replace line with localization result"), AssFile::COMMIT_DIAG_TEXT, -1, cur);
+
+	if (GetLocalizationOptions().use_project_tm) {
+		localization_tm_.Append(std::move(source), std::move(replacement));
+		try {
+			localization_tm_.Save(config::path->Decode(
+				"?user/localization-tm.tsv"));
+		}
+		catch (agi::Exception const&) {
+			// A read-only profile should not break matching.
+		}
+	}
 }
 
 void SubsEditBox::OnLocalizationInsert(wxCommandEvent&) {

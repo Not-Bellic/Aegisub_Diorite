@@ -56,6 +56,23 @@ TEST(lagi_localization, NormalizeCase) {
 	EXPECT_EQ(Normalize("HELLO", keep_case), "HELLO");
 }
 
+TEST(lagi_localization, NormalizeEscapesAndTypography) {
+	MatchOptions options = DefaultOptions();
+	EXPECT_EQ(Normalize("Line1\\hLine2", options), "line1 line2");
+	EXPECT_EQ(Normalize("ＡＢＣ　１２３", options), "abc 123");
+	EXPECT_EQ(Normalize("“Hello” — it’s ﬁne", options), "hello its fine");
+	EXPECT_EQ(Normalize("ŁÓDŹ İI", options), "łódź ii");
+	EXPECT_EQ(Normalize("cafe\u0301", options), "cafe");
+	EXPECT_EQ(Normalize("こんにちは 世界", options), "こんにちは世界");
+	EXPECT_EQ(Normalize("Hello 世界", options), "hello世界");
+}
+
+TEST(lagi_localization, NormalizeKeepsLiteralAngleBrackets) {
+	MatchOptions options = DefaultOptions();
+	EXPECT_EQ(Normalize("a < b > c", options), "a b c");
+	EXPECT_EQ(Normalize("<font color=red>Hi</font>", options), "hi");
+}
+
 TEST(lagi_localization, Similarity) {
 	EXPECT_EQ(Similarity("hello", "hello"), 1.0);
 	EXPECT_DOUBLE_EQ(Similarity("abc", "abd"), 2.0 / 3.0);
@@ -110,6 +127,36 @@ TEST(lagi_localization, SplitSegmentsLeadingEllipsis) {
 	auto segments = SplitSegments("… this is the very latest model, the LT600.");
 	ASSERT_EQ(segments.size(), 1u);
 	EXPECT_EQ(segments[0], "… this is the very latest model, the LT600.");
+}
+
+TEST(lagi_localization, SplitSegmentsAbbreviations) {
+	auto segments = SplitSegments("Mr. Smith went home. Then he left.");
+	ASSERT_EQ(segments.size(), 2u);
+	EXPECT_EQ(segments[0], "Mr. Smith went home.");
+	EXPECT_EQ(segments[1], "Then he left.");
+
+	segments = SplitSegments("The U.S. Army arrived. Next.");
+	ASSERT_EQ(segments.size(), 2u);
+	EXPECT_EQ(segments[0], "The U.S. Army arrived.");
+
+	segments = SplitSegments("J. K. Rowling wrote it.");
+	ASSERT_EQ(segments.size(), 1u);
+
+	segments = SplitSegments("The value is 3.5. Next.");
+	ASSERT_EQ(segments.size(), 2u);
+	EXPECT_EQ(segments[0], "The value is 3.5.");
+}
+
+TEST(lagi_localization, SplitSegmentsEllipsisRuns) {
+	auto segments = SplitSegments("Hello... World");
+	ASSERT_EQ(segments.size(), 2u);
+	EXPECT_EQ(segments[0], "Hello...");
+	EXPECT_EQ(segments[1], "World");
+
+	segments = SplitSegments("你好……也许");
+	ASSERT_EQ(segments.size(), 2u);
+	EXPECT_EQ(segments[0], "你好……");
+	EXPECT_EQ(segments[1], "也许");
 }
 
 TEST(lagi_localization, SplitSegmentsRegexTags) {
@@ -250,6 +297,50 @@ TEST(lagi_localization, MatchFuzzy) {
 	MatchOptions strict = DefaultOptions();
 	strict.threshold = 0.99;
 	EXPECT_TRUE(Match("Hello word", files, strict).empty());
+}
+
+TEST(lagi_localization, MatchContainedQuery) {
+	std::vector<LocalizationFile> files(1);
+	files[0].name = "ja.json";
+	files[0].ok = true;
+	files[0].items.push_back(
+		{"", "こんにちは世界、いい天気ですね", "ja.json"});
+
+	// The global edit ratio is below 0.7; containment must still find it.
+	auto results = Match("こんにちは世界", files, DefaultOptions());
+	ASSERT_FALSE(results.empty());
+	EXPECT_EQ(results[0].replacement, "こんにちは世界、いい天気ですね");
+}
+
+TEST(lagi_localization, MatchTokenReorder) {
+	std::vector<LocalizationFile> files(1);
+	files[0].name = "en.json";
+	files[0].ok = true;
+	files[0].items.push_back({"", "Hello world", "en.json"});
+
+	// Word order differs, so the edit ratio is low but the token overlap is
+	// complete.
+	EXPECT_FALSE(Match("world hello", files, DefaultOptions()).empty());
+}
+
+TEST(lagi_localization, MatchAnchorBoostsNearbyEntries) {
+	std::vector<LocalizationFile> files(1);
+	files[0].name = "script.json";
+	files[0].ok = true;
+	files[0].items.push_back({"", "Alpha near", "script.json"});
+	files[0].items.push_back({"", "other one", "script.json"});
+	files[0].items.push_back({"", "other two", "script.json"});
+	files[0].items.push_back({"", "other three", "script.json"});
+	files[0].items.push_back({"", "other four", "script.json"});
+	files[0].items.push_back({"", "Alpha far", "script.json"});
+
+	MatchContext context;
+	context.anchor_file = 0;
+	context.anchor_position = 0;
+
+	auto results = Match("Alpha", files, DefaultOptions(), {}, context);
+	ASSERT_FALSE(results.empty());
+	EXPECT_EQ(results[0].replacement, "Alpha near");
 }
 
 TEST(lagi_localization, MatchKeyAsText) {
@@ -410,6 +501,27 @@ TEST(lagi_localization, LoadDetectsLanguage) {
 	EXPECT_EQ(bilingual.language, "中文");
 }
 
+TEST(lagi_localization, MatchPrefersPreferredLanguageOverExact) {
+	std::vector<LocalizationFile> files(2);
+	files[0].name = "en.json";
+	files[0].ok = true;
+	files[0].language = "English";
+	files[0].pairs.push_back({"", "Hello", "Bonjour", "en.json"});
+	files[1].name = "zh.json";
+	files[1].ok = true;
+	files[1].language = "中文";
+	files[1].pairs.push_back({"", "Hello world", "你好世界", "zh.json"});
+
+	MatchOptions options = DefaultOptions();
+	options.hide_source_language = false;
+	options.preferred_language = "中文";
+	auto results = Match("Hello", files, options);
+	ASSERT_GE(results.size(), 2u);
+	// The exact result is not in the preferred language, so it ranks below
+	// the fuzzy preferred-language match.
+	EXPECT_EQ(results[0].file, "zh.json");
+}
+
 TEST(lagi_localization, MatchPrefersPreferredLanguage) {
 	std::vector<LocalizationFile> files(2);
 	files[0].name = "en.json";
@@ -422,6 +534,8 @@ TEST(lagi_localization, MatchPrefersPreferredLanguage) {
 	files[1].pairs.push_back({"", "Hello", "你好", "zh.json"});
 
 	MatchOptions options = DefaultOptions();
+	// This test is about result ordering, so keep same-language results.
+	options.hide_source_language = false;
 	options.preferred_language = "中文";
 	auto results = Match("Hello", files, options);
 	ASSERT_EQ(results.size(), 2u);
@@ -436,6 +550,289 @@ TEST(lagi_localization, MatchPrefersPreferredLanguage) {
 	results = Match("Hello", files, options);
 	ASSERT_EQ(results.size(), 2u);
 	EXPECT_EQ(results[0].file, "en.json");
+}
+
+TEST(lagi_localization, MatchBilingualSourceSideIsNotOffered) {
+	// Both bilingual files carry the same English source text. The source side
+	// must never be offered as a translation, even when the line differs from
+	// it only by punctuation.
+	std::vector<LocalizationFile> files;
+	files.push_back(LoadContent(
+		R"({"k": {"source": "Hello", "translation": "你好"}})",
+		"zh.json", "json"));
+	files.push_back(LoadContent(
+		R"({"k": {"source": "Hello", "translation": "こんにちは"}})",
+		"ja.json", "json"));
+	ASSERT_TRUE(files[0].ok);
+	ASSERT_TRUE(files[1].ok);
+
+	auto results = Match("Hello!", files, DefaultOptions());
+	ASSERT_FALSE(results.empty());
+
+	bool has_zh = false;
+	bool has_ja = false;
+	for (auto const& r : results) {
+		EXPECT_NE(r.replacement, "Hello");
+		if (r.replacement == "你好") has_zh = true;
+		if (r.replacement == "こんにちは") has_ja = true;
+	}
+	EXPECT_TRUE(has_zh);
+	EXPECT_TRUE(has_ja);
+	EXPECT_EQ(results[0].replacement, "你好");
+}
+
+TEST(lagi_localization, MatchLinksKeysIgnoringCase) {
+	std::vector<LocalizationFile> files(2);
+	files[0].name = "en.json";
+	files[0].ok = true;
+	files[0].items.push_back({"Greeting", "Hello", "en.json"});
+	files[1].name = "zh.json";
+	files[1].ok = true;
+	files[1].items.push_back({"greeting", "你好", "zh.json"});
+
+	auto results = Match("Hello", files, DefaultOptions());
+	bool found = false;
+	for (auto const& r : results) {
+		if (r.file == "zh.json" && r.replacement == "你好")
+			found = true;
+	}
+	EXPECT_TRUE(found);
+}
+
+TEST(lagi_localization, ExtractKeysFromLineField) {
+	auto keys = ExtractKeys("X0101X_TERRACE_PART1", R"((X\d{4}X))");
+	ASSERT_EQ(keys.size(), 1u);
+	EXPECT_EQ(keys[0], "X0101X");
+
+	EXPECT_TRUE(ExtractKeys("no key here", R"((X\d{4}X))").empty());
+	EXPECT_TRUE(ExtractKeys("X0101X", "").empty());
+	EXPECT_TRUE(ExtractKeys("X0101X", "(").empty());
+}
+
+TEST(lagi_localization, RegexValidation) {
+	EXPECT_TRUE(IsValidRegex(""));
+	EXPECT_TRUE(IsValidRegex("\\{[^}]*\\}"));
+	EXPECT_FALSE(IsValidRegex("("));
+	EXPECT_FALSE(IsValidRegex("[a-"));
+}
+
+TEST(lagi_localization, PrepareKeepsMatchingResults) {
+	std::vector<LocalizationFile> files(1);
+	files[0].name = "en.json";
+	files[0].ok = true;
+	files[0].items.push_back({"", "Hello world", "en.json"});
+
+	MatchOptions options = DefaultOptions();
+	Prepare(files, options);
+	auto results = Match("Hello word", files, options);
+	ASSERT_FALSE(results.empty());
+
+	// Changing an option that affects normalization refreshes the cache.
+	options.ignore_punctuation = false;
+	Prepare(files, options);
+	EXPECT_FALSE(Match("Hello word", files, options).empty());
+}
+
+TEST(lagi_localization, MatchUsesExtractedKey) {
+	std::vector<LocalizationFile> files(2);
+	files[0].name = "en.json";
+	files[0].ok = true;
+	files[0].items.push_back({"X0101X_TERRACE", "Hello", "en.json"});
+	files[1].name = "zh.json";
+	files[1].ok = true;
+	files[1].items.push_back({"X0101X_TERRACE", "你好", "zh.json"});
+
+	// The line text has nothing to do with the entry; the extracted key does.
+	auto results = Match("unrelated line", files, DefaultOptions(),
+		{"x0101x_terrace"});
+	bool found = false;
+	for (auto const& r : results)
+		if (r.from_key && r.replacement == "你好") found = true;
+	EXPECT_TRUE(found);
+}
+
+TEST(lagi_localization, MatchPairsUnkeyedFilesByPosition) {
+	auto en = LoadContent("Hello\nBye\n", "en.txt", "txt");
+	auto zh = LoadContent("你好\n再见\n", "zh.txt", "txt");
+	ASSERT_TRUE(en.ok);
+	ASSERT_TRUE(zh.ok);
+	ASSERT_TRUE(en.items[0].key.empty());
+	ASSERT_TRUE(zh.items[0].key.empty());
+	ASSERT_NE(en.language, zh.language);
+
+	std::vector<LocalizationFile> files;
+	files.push_back(en);
+	files.push_back(zh);
+
+	auto results = Match("Hello", files, DefaultOptions());
+	bool found = false;
+	for (auto const& r : results)
+		if (r.replacement == "你好") found = true;
+	EXPECT_TRUE(found);
+}
+
+TEST(lagi_localization, MatchRespectsExplicitFileRoles) {
+	// Same language and same length would normally not be paired; explicit
+	// Source/Target roles make the direction unambiguous.
+	std::vector<LocalizationFile> files(2);
+	files[0].name = "source.txt";
+	files[0].ok = true;
+	files[0].language = "English";
+	files[0].role = FileRole::Source;
+	files[0].items.push_back({"", "Hello", "source.txt"});
+	files[1].name = "target.txt";
+	files[1].ok = true;
+	files[1].language = "English";
+	files[1].role = FileRole::Target;
+	files[1].items.push_back({"", "Bonjour", "target.txt"});
+
+	auto results = Match("Hello", files, DefaultOptions());
+	bool found = false;
+	for (auto const& r : results)
+		if (r.replacement == "Bonjour") found = true;
+	EXPECT_TRUE(found);
+}
+
+TEST(lagi_localization, MatchIgnoresSingleCharacterKeys) {
+	std::vector<LocalizationFile> files(1);
+	files[0].name = "keys.json";
+	files[0].ok = true;
+	files[0].items.push_back({"你", "Hello", "keys.json"});
+
+	// One character (three UTF-8 bytes) is too weak a key to match.
+	EXPECT_TRUE(Match("你", files, DefaultOptions()).empty());
+}
+
+TEST(lagi_localization, MatchFuzzyKeyNeedsFourCharacterKeys) {
+	std::vector<LocalizationFile> files(1);
+	files[0].name = "keys.json";
+	files[0].ok = true;
+	files[0].items.push_back({"你好", "Hi", "keys.json"});
+
+	MatchOptions options = DefaultOptions();
+	options.threshold = 0.5;
+	// Two CJK characters are six UTF-8 bytes but only two characters; byte
+	// lengths used to let this key pass the "longer keys only" fuzz filter.
+	EXPECT_TRUE(Match("你坏", files, options).empty());
+}
+
+TEST(lagi_localization, MatchPairsJsonArrayElementsByIndex) {
+	auto en = LoadContent(R"(["Hello", "Bye"])", "en.json", "json");
+	auto zh = LoadContent(R"(["你好", "再见"])", "zh.json", "json");
+	ASSERT_TRUE(en.ok);
+	ASSERT_TRUE(zh.ok);
+
+	std::vector<LocalizationFile> files;
+	files.push_back(en);
+	files.push_back(zh);
+
+	auto results = Match("Hello", files, DefaultOptions());
+	bool found = false;
+	for (auto const& r : results)
+		if (r.replacement == "你好") found = true;
+	EXPECT_TRUE(found);
+}
+
+TEST(lagi_localization, MatchAlignsSegmentsByMarkerNotIndex) {
+	std::vector<LocalizationFile> files(2);
+	files[0].name = "en.json";
+	files[0].ok = true;
+	files[0].items.push_back(
+		{"K", "{*1}Alpha. {*2}Beta. {*3}Gamma.", "en.json"});
+	files[1].name = "zh.json";
+	files[1].ok = true;
+	files[1].items.push_back({"K", "{*1}一号。{*3}三号。", "zh.json"});
+
+	auto results = Match("Gamma", files, DefaultOptions());
+	bool found = false;
+	for (auto const& r : results) {
+		if (r.replacement == "三号。") found = true;
+		// The old index alignment fell back to the whole multi-sentence entry.
+		EXPECT_NE(r.replacement, "{*1}一号。{*3}三号。");
+	}
+	EXPECT_TRUE(found);
+}
+
+TEST(lagi_localization, MatchHidesSourceLanguageResults) {
+	std::vector<LocalizationFile> files(2);
+	files[0].name = "en.json";
+	files[0].ok = true;
+	files[0].language = "English";
+	files[0].items.push_back({"K", "Hello world", "en.json"});
+	files[1].name = "zh.json";
+	files[1].ok = true;
+	files[1].language = "中文";
+	files[1].items.push_back({"K", "你好世界", "zh.json"});
+
+	MatchOptions options = DefaultOptions();
+	options.hide_source_language = true;
+	auto results = Match("Hello word", files, options);
+	ASSERT_FALSE(results.empty());
+	for (auto const& r : results)
+		EXPECT_NE(r.file, "en.json");
+
+	bool has_zh = false;
+	for (auto const& r : results)
+		if (r.replacement == "你好世界") has_zh = true;
+	EXPECT_TRUE(has_zh);
+
+	MatchOptions keep = options;
+	keep.hide_source_language = false;
+	bool has_en = false;
+	for (auto const& r : Match("Hello word", files, keep))
+		if (r.file == "en.json") has_en = true;
+	EXPECT_TRUE(has_en);
+}
+
+TEST(lagi_localization, MatchKeepsPreferredLanguageResults) {
+	// A translator editing the localized script searches in the target
+	// language; those same-language results must not be filtered out.
+	std::vector<LocalizationFile> files(2);
+	files[0].name = "zh.json";
+	files[0].ok = true;
+	files[0].language = "中文";
+	files[0].items.push_back({"K", "你好，世界", "zh.json"});
+	files[1].name = "en.json";
+	files[1].ok = true;
+	files[1].language = "English";
+	files[1].items.push_back({"K", "Hello world", "en.json"});
+
+	auto results = Match("你好世界", files, DefaultOptions());
+	ASSERT_FALSE(results.empty());
+	EXPECT_EQ(results[0].replacement, "你好，世界");
+}
+
+TEST(lagi_localization, MatchDoesNotHideWhenNoOtherLanguage) {
+	// Every Latin-script language is detected as "English", so a French target
+	// is indistinguishable from an English source. With no other-language
+	// result to replace it, the reference text must not be deleted.
+	std::vector<LocalizationFile> files(1);
+	files[0].name = "fr.json";
+	files[0].ok = true;
+	files[0].language = "English";
+	files[0].items.push_back({"", "Bonjour le monde", "fr.json"});
+
+	EXPECT_FALSE(Match("Bonjour le mond", files, DefaultOptions()).empty());
+}
+
+TEST(lagi_localization, MatchDistinguishesSameNamedFiles) {
+	std::vector<LocalizationFile> files(2);
+	files[0].name = "strings.json";
+	files[0].ok = true;
+	files[0].language = "English";
+	files[0].items.push_back({"K", "Hello", "strings.json"});
+	files[1].name = "strings.json";
+	files[1].ok = true;
+	files[1].language = "中文";
+	files[1].items.push_back({"K", "你好", "strings.json"});
+
+	MatchOptions options = DefaultOptions();
+	options.hide_source_language = false;
+	auto results = Match("Hello", files, options);
+	bool found = false;
+	for (auto const& r : results)
+		if (r.replacement == "你好") found = true;
+	EXPECT_TRUE(found);
 }
 
 TEST(lagi_localization, MatchPrefersWithoutSplitRegexText) {

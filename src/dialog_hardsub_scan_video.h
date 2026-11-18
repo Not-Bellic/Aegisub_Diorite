@@ -40,6 +40,8 @@ class wxChoice;
 class wxGauge;
 class wxListCtrl;
 class wxSpinCtrl;
+class wxSpinCtrlDouble;
+class wxSpinDoubleEvent;
 class wxSpinEvent;
 class wxStaticText;
 class PersistLocation;
@@ -71,6 +73,9 @@ struct HardSubScanVideoOutcome {
 	int decoder_frames = 0;
 	long long decoder_ms = 0;
 	long long copy_ms = 0;
+	/// Wall-clock time the scan thread spent on this run, including waiting for
+	/// the OCR engine. Shown in the completion status.
+	long long elapsed_ms = 0;
 };
 
 /// Modeless dialog for scanning an entire video for burned-in subtitles inside a
@@ -83,7 +88,9 @@ class DialogHardSubScanVideo final : public wxDialog {
 	wxStaticText *region_label = nullptr;
 	wxCheckBox *center_only_check = nullptr;
 	wxSpinCtrl *center_band_spin = nullptr;
+	wxSpinCtrlDouble *min_duration_seconds_spin = nullptr;
 	wxSpinCtrl *min_duration_spin = nullptr;
+	wxSpinCtrlDouble *detect_every_seconds_spin = nullptr;
 	wxSpinCtrl *detect_every_spin = nullptr;
 	wxChoice *scan_scale_choice = nullptr;
 	wxCheckBox *merge_check = nullptr;
@@ -108,6 +115,8 @@ class DialogHardSubScanVideo final : public wxDialog {
 	// State
 	wxRect region_;              ///< Region in video pixel coordinates
 	bool updating_region_spins_ = false;
+	bool updating_duration_spins_ = false;
+	bool updating_detect_spins_ = false;
 	bool scanning_ = false;
 	std::atomic<bool> cancel_scan_{false};
 	std::thread scan_thread_;
@@ -123,6 +132,16 @@ class DialogHardSubScanVideo final : public wxDialog {
 	void UpdateRegionLabel();
 	void GetVideoSize(int& w, int& h) const;
 	void SyncRegionSpins();
+	double FrameRate() const;
+	int SecondsToFrames(double seconds) const;
+	double FramesToSeconds(int frames) const;
+	void SyncFramesFromSeconds(wxSpinCtrlDouble *seconds_spin, wxSpinCtrl *frames_spin);
+	void SyncSecondsFromFrames(wxSpinCtrlDouble *seconds_spin, wxSpinCtrl *frames_spin);
+	void UpdateFramesFromSecondsText(wxString const& text, wxSpinCtrlDouble *seconds_spin,
+	                                 wxSpinCtrl *frames_spin);
+	void UpdateSecondsFromFramesText(wxString const& text, wxSpinCtrlDouble *seconds_spin,
+	                                 wxSpinCtrl *frames_spin);
+	void SyncFrameCountsFromSeconds();
 	void PopulateResults();
 	void AppendResultRow(hardsub::TimelineRowEvent const& ev);
 	std::vector<size_t> ResultIndices() const;
@@ -133,6 +152,14 @@ class DialogHardSubScanVideo final : public wxDialog {
 	void OnSelect(wxCommandEvent&);
 	void OnRegionPixelChanged(wxSpinEvent&);
 	void OnRegionPercentChanged(wxSpinEvent&);
+	void OnMinDurationSecondsChanged(wxSpinDoubleEvent&);
+	void OnMinDurationFramesChanged(wxSpinEvent&);
+	void OnDetectEverySecondsChanged(wxSpinDoubleEvent&);
+	void OnDetectEveryFramesChanged(wxSpinEvent&);
+	void OnMinDurationSecondsText(wxCommandEvent&);
+	void OnMinDurationFramesText(wxCommandEvent&);
+	void OnDetectEverySecondsText(wxCommandEvent&);
+	void OnDetectEveryFramesText(wxCommandEvent&);
 	void OnScan(wxCommandEvent&);
 	void OnCopy(wxCommandEvent&);
 	void OnInsert(wxCommandEvent&);

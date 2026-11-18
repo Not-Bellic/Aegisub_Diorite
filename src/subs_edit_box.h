@@ -34,6 +34,7 @@
 #include <boost/flyweight/flyweight_fwd.hpp>
 #include <vector>
 
+#include "localization/localization_tm.h"
 #include "localization/localization_types.h"
 
 #include <wx/bmpbuttn.h>
@@ -63,6 +64,11 @@ class wxStyledTextEvent;
 class wxStaticText;
 class wxTextCtrl;
 struct AssDialogueBase;
+
+/// Extract localization keys from a line's Actor, Effect, Style and text
+/// fields using a regular expression. Empty regex returns no keys.
+std::vector<std::string> GetLocalizationLineKeys(AssDialogue const* line,
+	std::string const& regex);
 
 template<class Base> class Placeholder;
 class ActorMRUManager;
@@ -163,6 +169,11 @@ class SubsEditBox final : public wxPanel {
 	std::string localization_files_signature_;
 	/// Match results for the current line.
 	std::vector<localization::MatchResult> localization_results_;
+	/// Anchor for proximity weighting: file/position of the last applied result.
+	std::size_t localization_anchor_file_ = static_cast<std::size_t>(-1);
+	std::size_t localization_anchor_position_ = 0;
+	localization::TranslationMemory localization_tm_;
+	bool localization_tm_loaded_ = false;
 	// [localization] END
 
 	void RebuildDisplayMapping(std::string const& raw_utf8);

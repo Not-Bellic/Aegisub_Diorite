@@ -20,6 +20,11 @@
 
 namespace localization {
 
+/// Guess the dominant language of UTF-8 text by script frequency. Returns a
+/// stable display name ("中文", "English", "日本語", "한국어", "Русский") or an
+/// empty string when no supported script is found.
+std::string DetectLanguage(std::string const& text);
+
 /// Parse an already decoded UTF-8 localization file.
 /// @param content UTF-8 text content of the file
 /// @param name Display name for the file (used in match results)

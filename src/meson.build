@@ -156,6 +156,8 @@ aegisub_src = files(
     'scan_video_decoder.cpp',
     'localization/localization_loader.cpp',
     'localization/localization_matcher.cpp',
+    'localization/localization_project.cpp',
+    'localization/localization_tm.cpp',
     'preferences.cpp',
     'preferences_base.cpp',
     'theme_preset.cpp',

@@ -54,6 +54,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <functional>
 #include <future>
@@ -74,6 +75,7 @@
 #include <wx/intl.h>
 #include <wx/listctrl.h>
 #include <wx/msgdlg.h>
+#include <wx/numformatter.h>
 #include <wx/sizer.h>
 #include <wx/spinctrl.h>
 #include <wx/statbox.h>
@@ -85,6 +87,35 @@ namespace {
 /// selected region. 100 keeps the original full-resolution behaviour.
 int const kScanScalePercents[] = { 100, 75, 50, 33, 25 };
 int const kScanScaleCount = sizeof(kScanScalePercents) / sizeof(kScanScalePercents[0]);
+
+/// The scan options' defaults are expressed in seconds; the frame boxes are
+/// derived from them with the video's frame rate.
+double const kDefaultMinDurationSeconds = 0.6;
+double const kDefaultDetectEverySeconds = 0.6;
+
+/// Frame rate used for the seconds <-> frames conversion when no video is
+/// loaded (the scan dialog normally only opens with a video).
+double const kFallbackFrameRate = 24.0;
+
+/// A wxSpinCtrlDouble that prints 0.6 rather than 0.600, so the seconds boxes
+/// read the way the value is written in the documentation. Native spin
+/// controls (GTK, Qt) format the text themselves and keep the fixed digits.
+class SecondsSpinCtrl final : public wxSpinCtrlDouble {
+public:
+	SecondsSpinCtrl(wxWindow *parent, double min, double max, double value, double inc)
+	: wxSpinCtrlDouble(parent, -1, "", wxDefaultPosition, wxSize(76, -1),
+	                   wxSP_ARROW_KEYS, min, max, value, inc) {
+		SetDigits(3);
+	}
+
+#if !defined(wxHAS_NATIVE_SPINCTRLDOUBLE)
+protected:
+	wxString DoValueToText(double value) override {
+		return wxNumberFormatter::ToString(value, static_cast<int>(GetDigits()),
+			wxNumberFormatter::Style_None | wxNumberFormatter::Style_NoTrailingZeroes);
+	}
+#endif
+};
 
 wxDEFINE_EVENT(EVT_HARDSUB_SCANV_PROGRESS, ValueEvent<HardSubScanVideoProgress>);
 wxDEFINE_EVENT(EVT_HARDSUB_SCANV_DONE, ValueEvent<HardSubScanVideoOutcome>);
@@ -102,6 +133,11 @@ int ReadIntOption(std::string const& name, int def) {
 	catch (...) { return def; }
 }
 
+double ReadDoubleOption(std::string const& name, double def) {
+	try { return OPT_GET(name)->GetDouble(); }
+	catch (...) { return def; }
+}
+
 bool ReadBoolOption(std::string const& name, bool def) {
 	try { return OPT_GET(name)->GetBool(); }
 	catch (...) { return def; }
@@ -109,6 +145,10 @@ bool ReadBoolOption(std::string const& name, bool def) {
 
 void SaveIntOption(std::string const& name, int value) {
 	try { OPT_SET(name)->SetInt(value); } catch (...) { }
+}
+
+void SaveDoubleOption(std::string const& name, double value) {
+	try { OPT_SET(name)->SetDouble(value); } catch (...) { }
 }
 
 void SaveBoolOption(std::string const& name, bool value) {
@@ -131,6 +171,11 @@ int GuardSEH(std::function<void()> const& fn) {
 
 std::string ToAssTime(int ms) {
 	return agi::Time(ms).GetAssFormatted(true);
+}
+
+wxString FormatDuration(long long ms) {
+	long long const s = ms / 1000;
+	return wxString::Format(_("%lld:%02lld:%02lld"), s / 3600, (s % 3600) / 60, s % 60);
 }
 
 } // namespace
@@ -250,6 +295,160 @@ void DialogHardSubScanVideo::SyncRegionSpins() {
 	updating_region_spins_ = false;
 }
 
+double DialogHardSubScanVideo::FrameRate() const {
+	if (auto provider = c->project->VideoProvider()) {
+		double const fps = provider->GetFPS().FPS();
+		if (fps > 0.0 && std::isfinite(fps))
+			return fps;
+	}
+	return kFallbackFrameRate;
+}
+
+int DialogHardSubScanVideo::SecondsToFrames(double seconds) const {
+	return static_cast<int>(std::lround(std::max(0.0, seconds) * FrameRate()));
+}
+
+double DialogHardSubScanVideo::FramesToSeconds(int frames) const {
+	double const fps = FrameRate();
+	if (fps <= 0.0)
+		return 0.0;
+	// Three decimals keep a frame's worth of time distinguishable at the
+	// frame rates the scan is used with, and the seconds box trims the
+	// trailing zeroes for display.
+	return std::round(frames * 1000.0 / fps) / 1000.0;
+}
+
+void DialogHardSubScanVideo::SyncFramesFromSeconds(wxSpinCtrlDouble *seconds_spin, wxSpinCtrl *frames_spin) {
+	int const wanted = SecondsToFrames(seconds_spin->GetValue());
+	int const frames = std::clamp(wanted, frames_spin->GetMin(), frames_spin->GetMax());
+	frames_spin->SetValue(frames);
+	// If the frame range clamped the result, move seconds to the value the
+	// frame box actually holds so the two boxes never disagree.
+	if (frames != wanted)
+		seconds_spin->SetValue(FramesToSeconds(frames));
+}
+
+void DialogHardSubScanVideo::SyncSecondsFromFrames(wxSpinCtrlDouble *seconds_spin, wxSpinCtrl *frames_spin) {
+	double const wanted = FramesToSeconds(frames_spin->GetValue());
+	double const seconds = std::clamp(wanted, seconds_spin->GetMin(), seconds_spin->GetMax());
+	seconds_spin->SetValue(seconds);
+	if (seconds != wanted) {
+		int const frames = std::clamp(SecondsToFrames(seconds),
+			frames_spin->GetMin(), frames_spin->GetMax());
+		frames_spin->SetValue(frames);
+	}
+}
+
+void DialogHardSubScanVideo::SyncFrameCountsFromSeconds() {
+	updating_duration_spins_ = true;
+	SyncFramesFromSeconds(min_duration_seconds_spin, min_duration_spin);
+	updating_duration_spins_ = false;
+
+	updating_detect_spins_ = true;
+	SyncFramesFromSeconds(detect_every_seconds_spin, detect_every_spin);
+	updating_detect_spins_ = false;
+}
+
+void DialogHardSubScanVideo::OnMinDurationSecondsChanged(wxSpinDoubleEvent&) {
+	if (updating_duration_spins_)
+		return;
+	updating_duration_spins_ = true;
+	SyncFramesFromSeconds(min_duration_seconds_spin, min_duration_spin);
+	updating_duration_spins_ = false;
+}
+
+void DialogHardSubScanVideo::OnMinDurationFramesChanged(wxSpinEvent&) {
+	if (updating_duration_spins_)
+		return;
+	updating_duration_spins_ = true;
+	SyncSecondsFromFrames(min_duration_seconds_spin, min_duration_spin);
+	updating_duration_spins_ = false;
+}
+
+void DialogHardSubScanVideo::OnDetectEverySecondsChanged(wxSpinDoubleEvent&) {
+	if (updating_detect_spins_)
+		return;
+	updating_detect_spins_ = true;
+	SyncFramesFromSeconds(detect_every_seconds_spin, detect_every_spin);
+	updating_detect_spins_ = false;
+}
+
+void DialogHardSubScanVideo::OnDetectEveryFramesChanged(wxSpinEvent&) {
+	if (updating_detect_spins_)
+		return;
+	updating_detect_spins_ = true;
+	SyncSecondsFromFrames(detect_every_seconds_spin, detect_every_spin);
+	updating_detect_spins_ = false;
+}
+
+void DialogHardSubScanVideo::UpdateFramesFromSecondsText(
+	wxString const& text, wxSpinCtrlDouble *seconds_spin, wxSpinCtrl *frames_spin) {
+	double seconds = 0.0;
+	if (!wxNumberFormatter::FromString(text, &seconds))
+		return;
+	if (seconds < seconds_spin->GetMin() || seconds > seconds_spin->GetMax())
+		return;
+
+	int const frames = SecondsToFrames(seconds);
+	if (frames < frames_spin->GetMin() || frames > frames_spin->GetMax())
+		return;
+	frames_spin->SetValue(frames);
+}
+
+void DialogHardSubScanVideo::UpdateSecondsFromFramesText(
+	wxString const& text, wxSpinCtrlDouble *seconds_spin, wxSpinCtrl *frames_spin) {
+	long frames = 0;
+	if (!text.ToLong(&frames))
+		return;
+	if (frames < frames_spin->GetMin() || frames > frames_spin->GetMax())
+		return;
+
+	double const seconds = FramesToSeconds(static_cast<int>(frames));
+	if (seconds < seconds_spin->GetMin() || seconds > seconds_spin->GetMax())
+		return;
+	seconds_spin->SetValue(seconds);
+}
+
+void DialogHardSubScanVideo::OnMinDurationSecondsText(wxCommandEvent& event) {
+	if (!updating_duration_spins_) {
+		updating_duration_spins_ = true;
+		UpdateFramesFromSecondsText(event.GetString(),
+			min_duration_seconds_spin, min_duration_spin);
+		updating_duration_spins_ = false;
+	}
+	event.Skip();
+}
+
+void DialogHardSubScanVideo::OnMinDurationFramesText(wxCommandEvent& event) {
+	if (!updating_duration_spins_) {
+		updating_duration_spins_ = true;
+		UpdateSecondsFromFramesText(event.GetString(),
+			min_duration_seconds_spin, min_duration_spin);
+		updating_duration_spins_ = false;
+	}
+	event.Skip();
+}
+
+void DialogHardSubScanVideo::OnDetectEverySecondsText(wxCommandEvent& event) {
+	if (!updating_detect_spins_) {
+		updating_detect_spins_ = true;
+		UpdateFramesFromSecondsText(event.GetString(),
+			detect_every_seconds_spin, detect_every_spin);
+		updating_detect_spins_ = false;
+	}
+	event.Skip();
+}
+
+void DialogHardSubScanVideo::OnDetectEveryFramesText(wxCommandEvent& event) {
+	if (!updating_detect_spins_) {
+		updating_detect_spins_ = true;
+		UpdateSecondsFromFramesText(event.GetString(),
+			detect_every_seconds_spin, detect_every_spin);
+		updating_detect_spins_ = false;
+	}
+	event.Skip();
+}
+
 void DialogHardSubScanVideo::CreateControls() {
 	auto main_sizer = new wxBoxSizer(wxVERTICAL);
 
@@ -312,16 +511,29 @@ void DialogHardSubScanVideo::CreateControls() {
 		center_band_spin->SetToolTip(_("Rows whose horizontal center lies inside the middle this many percent of the region are kept; 100 disables the filter."));
 		grid->Add(center_band_spin, 1, wxEXPAND);
 
-		grid->Add(new wxStaticText(this, -1, _("Min duration (frames)")), 0, wxALIGN_CENTER_VERTICAL);
-		min_duration_spin = new wxSpinCtrl(this, -1, "", wxDefaultPosition, wxSize(-1, -1),
-		                                   wxSP_ARROW_KEYS, 0, 2000, 12);
-		grid->Add(min_duration_spin, 1, wxEXPAND);
-
-		grid->Add(new wxStaticText(this, -1, _("OCR every (frames)")), 0, wxALIGN_CENTER_VERTICAL);
-		detect_every_spin = new wxSpinCtrl(this, -1, "", wxDefaultPosition, wxSize(-1, -1),
-		                                   wxSP_ARROW_KEYS, 1, 60, 16);
+		// Both time options are edited in seconds first; the frame value next to
+		// it is derived from the video's frame rate and stays in sync whichever
+		// of the two boxes is changed.
+		auto add_time_row = [&](wxString const& label,
+		                        wxSpinCtrlDouble*& seconds_spin, double seconds_min, double seconds_value,
+		                        wxSpinCtrl*& frames_spin, int frames_min) {
+			grid->Add(new wxStaticText(this, -1, label), 0, wxALIGN_CENTER_VERTICAL);
+			auto row = new wxBoxSizer(wxHORIZONTAL);
+			seconds_spin = new SecondsSpinCtrl(this, seconds_min, 60.0, seconds_value, 0.1);
+			row->Add(seconds_spin, 0, wxALIGN_CENTER_VERTICAL);
+			row->Add(new wxStaticText(this, -1, _("sec")), 0, wxALIGN_CENTER_VERTICAL | wxLEFT | wxRIGHT, 3);
+			frames_spin = new wxSpinCtrl(this, -1, "", wxDefaultPosition, wxSize(76, -1),
+			                             wxSP_ARROW_KEYS, frames_min, 100000, frames_min);
+			row->Add(frames_spin, 0, wxALIGN_CENTER_VERTICAL);
+			row->Add(new wxStaticText(this, -1, _("frames")), 0, wxALIGN_CENTER_VERTICAL | wxLEFT, 3);
+			grid->Add(row, 1, wxEXPAND);
+		};
+		add_time_row(_("Min duration"), min_duration_seconds_spin, 0.0, kDefaultMinDurationSeconds,
+		             min_duration_spin, 0);
+		add_time_row(_("OCR every"), detect_every_seconds_spin, 0.01, kDefaultDetectEverySeconds,
+		             detect_every_spin, 1);
+		detect_every_seconds_spin->SetToolTip(_("Minimum gap between OCR samples while the region is stable. Smaller values are more accurate but slower."));
 		detect_every_spin->SetToolTip(_("Minimum gap between OCR samples while the region is stable. Smaller values are more accurate but slower."));
-		grid->Add(detect_every_spin, 1, wxEXPAND);
 
 		grid->Add(new wxStaticText(this, -1, _("Scan resolution")), 0, wxALIGN_CENTER_VERTICAL);
 		scan_scale_choice = new wxChoice(this, -1);
@@ -390,8 +602,11 @@ void DialogHardSubScanVideo::CreateControls() {
 
 	center_only_check->SetValue(ReadBoolOption("Tool/HardSubScanVideo/Center Only", true));
 	center_band_spin->SetValue(ReadIntOption("Tool/HardSubScanVideo/Center Band", 10));
-	min_duration_spin->SetValue(ReadIntOption("Tool/HardSubScanVideo/Min Duration Frames", 12));
-	detect_every_spin->SetValue(ReadIntOption("Tool/HardSubScanVideo/Detect Every", 16));
+	min_duration_seconds_spin->SetValue(
+		ReadDoubleOption("Tool/HardSubScanVideo/Min Duration Seconds", kDefaultMinDurationSeconds));
+	detect_every_seconds_spin->SetValue(
+		ReadDoubleOption("Tool/HardSubScanVideo/Detect Every Seconds", kDefaultDetectEverySeconds));
+	SyncFrameCountsFromSeconds();
 	int saved_scan_scale = ReadIntOption("Tool/HardSubScanVideo/Scan Scale", 100);
 	int scan_scale_selection = 0;
 	for (int i = 0; i < kScanScaleCount; ++i)
@@ -410,6 +625,14 @@ void DialogHardSubScanVideo::CreateControls() {
 	pct_right_spin->Bind(wxEVT_SPINCTRL, &DialogHardSubScanVideo::OnRegionPercentChanged, this);
 	pct_bottom_spin->Bind(wxEVT_SPINCTRL, &DialogHardSubScanVideo::OnRegionPercentChanged, this);
 	pct_left_spin->Bind(wxEVT_SPINCTRL, &DialogHardSubScanVideo::OnRegionPercentChanged, this);
+	min_duration_seconds_spin->Bind(wxEVT_SPINCTRLDOUBLE, &DialogHardSubScanVideo::OnMinDurationSecondsChanged, this);
+	min_duration_spin->Bind(wxEVT_SPINCTRL, &DialogHardSubScanVideo::OnMinDurationFramesChanged, this);
+	detect_every_seconds_spin->Bind(wxEVT_SPINCTRLDOUBLE, &DialogHardSubScanVideo::OnDetectEverySecondsChanged, this);
+	detect_every_spin->Bind(wxEVT_SPINCTRL, &DialogHardSubScanVideo::OnDetectEveryFramesChanged, this);
+	min_duration_seconds_spin->Bind(wxEVT_TEXT, &DialogHardSubScanVideo::OnMinDurationSecondsText, this);
+	min_duration_spin->Bind(wxEVT_TEXT, &DialogHardSubScanVideo::OnMinDurationFramesText, this);
+	detect_every_seconds_spin->Bind(wxEVT_TEXT, &DialogHardSubScanVideo::OnDetectEverySecondsText, this);
+	detect_every_spin->Bind(wxEVT_TEXT, &DialogHardSubScanVideo::OnDetectEveryFramesText, this);
 	scan_button->Bind(wxEVT_BUTTON, &DialogHardSubScanVideo::OnScan, this);
 	copy_button->Bind(wxEVT_BUTTON, &DialogHardSubScanVideo::OnCopy, this);
 	insert_button->Bind(wxEVT_BUTTON, &DialogHardSubScanVideo::OnInsert, this);
@@ -571,8 +794,13 @@ void DialogHardSubScanVideo::OnScan(wxCommandEvent&) {
 	SaveIntOption("Tool/HardSubScanVideo/Region H", region_.GetHeight());
 	SaveBoolOption("Tool/HardSubScanVideo/Center Only", center_only_check->GetValue());
 	SaveIntOption("Tool/HardSubScanVideo/Center Band", center_band_spin->GetValue());
-	SaveIntOption("Tool/HardSubScanVideo/Min Duration Frames", min_duration_spin->GetValue());
-	SaveIntOption("Tool/HardSubScanVideo/Detect Every", detect_every_spin->GetValue());
+	// Seconds are the stored baseline; the frame boxes are derived from them,
+	// so refresh the frames before reading the scan options.
+	SyncFrameCountsFromSeconds();
+	double const min_duration_seconds = min_duration_seconds_spin->GetValue();
+	double const detect_every_seconds = detect_every_seconds_spin->GetValue();
+	SaveDoubleOption("Tool/HardSubScanVideo/Min Duration Seconds", min_duration_seconds);
+	SaveDoubleOption("Tool/HardSubScanVideo/Detect Every Seconds", detect_every_seconds);
 	int scan_scale_percent = SelectedScanScale();
 	SaveIntOption("Tool/HardSubScanVideo/Scan Scale", scan_scale_percent);
 	SaveBoolOption("Tool/HardSubScanVideo/Merge Same Interval", merge_check->GetValue());
@@ -621,6 +849,9 @@ void DialogHardSubScanVideo::OnScan(wxCommandEvent&) {
 
 	auto handler = this;
 	scan_thread_ = std::thread([handler, options, video_filename, profile]() mutable {
+		// The completion status reports the full processing time, so start the
+		// clock before the decoder and OCR engine are prepared.
+		auto const thread_start = std::chrono::steady_clock::now();
 		auto cancel = [handler] { return handler->cancel_scan_.load(); };
 		std::string decoder_error;
 		auto decoder = std::make_shared<hardsub::ScanVideoDecoder>(video_filename, decoder_error,
@@ -706,6 +937,8 @@ void DialogHardSubScanVideo::OnScan(wxCommandEvent&) {
 			outcome = HardSubScanVideoOutcome();
 			outcome.error = from_wx(_("Hard subtitle scan failed with an unknown error."));
 		}
+		outcome.elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+			std::chrono::steady_clock::now() - thread_start).count();
 		handler->AddPendingEvent(ValueEvent<HardSubScanVideoOutcome>(
 			EVT_HARDSUB_SCANV_DONE, -1, std::move(outcome)));
 	});
@@ -734,10 +967,6 @@ void DialogHardSubScanVideo::OnScanProgress(ValueEvent<HardSubScanVideoProgress>
 	long long eta = 0;
 	if (percent > 0)
 		eta = elapsed * (1000 - percent) / percent;
-	auto fmt = [](long long ms) {
-		long long s = ms / 1000;
-		return wxString::Format(_("%lld:%02lld:%02lld"), s / 3600, (s % 3600) / 60, s % 60);
-	};
 	// Do NOT pass wxString values to wxString::Format's %s: wxString does not
 	// convert to a character pointer in a C varargs call, so %s would treat the
 	// wxString object's bytes as a pointer and dereference garbage (crash).
@@ -756,9 +985,9 @@ void DialogHardSubScanVideo::OnScanProgress(ValueEvent<HardSubScanVideoProgress>
 		status = wxString::Format(_("Finishing (%d%%)  |  elapsed "), percent / 10);
 		break;
 	}
-	status += fmt(elapsed);
+	status += FormatDuration(elapsed);
 	status += wxString(_("  |  ETA "));
-	status += fmt(eta);
+	status += FormatDuration(eta);
 	status += wxString::Format(_("  |  OCR %d"), p.ocr_samples);
 	if (p.ocr_ms > 0) {
 		status += wxString(" (");
@@ -811,20 +1040,25 @@ void DialogHardSubScanVideo::OnScanDone(ValueEvent<HardSubScanVideoOutcome>& eve
 			<< " ms, row presence " << prof.MsPresence() << " ms, deferred reads " << prof.MsBoundary() << " ms, OCR engine " << ocr_ms
 			<< " ms (" << prof.ocr_detect_calls << " detect, "
 			<< prof.ocr_recognize_calls << " recognize), OCR image " << prof.MsOcrImage()
-			<< " ms";
+			<< " ms, elapsed " << outcome.elapsed_ms << " ms";
 		if (prof.ocr_detect_calls > 0) {
-			SetStatus(wxString::Format(
-				           _("Scan complete: %d lines detected (OCR %d samples, %.1f s)."),
-				           static_cast<int>(events_.size()), prof.ocr_detect_calls, ocr_ms / 1000.0)
-				+ wxString::Format("  |  decode %d%%  pixels %d%%  OCR %d%%  rows %d%%",
-				                   pct(prof.MsDecode()),
-				                   pct(prof.MsRegion() + prof.MsChange()),
-				                   pct(ocr_ms + prof.MsOcrImage()),
-				                   pct(prof.MsBoundary() + prof.MsPresence())));
+			wxString status = wxString::Format(
+				_("Scan complete: %d lines detected (OCR %d samples, %.1f s)."),
+				static_cast<int>(events_.size()), prof.ocr_detect_calls, ocr_ms / 1000.0);
+			status += wxString(_("  |  elapsed "));
+			status += FormatDuration(outcome.elapsed_ms);
+			status += wxString::Format("  |  decode %d%%  pixels %d%%  OCR %d%%  rows %d%%",
+				pct(prof.MsDecode()),
+				pct(prof.MsRegion() + prof.MsChange()),
+				pct(ocr_ms + prof.MsOcrImage()),
+				pct(prof.MsBoundary() + prof.MsPresence()));
+			SetStatus(status);
 		}
 		else {
 			SetStatus(wxString::Format(_("Scan complete: %d lines detected."),
-				static_cast<int>(events_.size())));
+				           static_cast<int>(events_.size()))
+				+ wxString(_("  |  elapsed "))
+				+ FormatDuration(outcome.elapsed_ms));
 		}
 	}
 	else {
@@ -982,13 +1216,18 @@ void DialogHardSubScanVideo::OnVideoChanged(AsyncVideoProvider *provider) {
 	if (!provider) {
 		CancelScan();
 	}
-	else if (region_.GetWidth() <= 0) {
-		int w = provider->GetWidth();
-		int h = provider->GetHeight();
-		if (w > 0 && h > 0) {
-			region_ = wxRect(0, h * 4 / 5, w, std::max(1, h - h * 4 / 5));
-			UpdateRegionLabel();
+	else {
+		if (region_.GetWidth() <= 0) {
+			int w = provider->GetWidth();
+			int h = provider->GetHeight();
+			if (w > 0 && h > 0) {
+				region_ = wxRect(0, h * 4 / 5, w, std::max(1, h - h * 4 / 5));
+				UpdateRegionLabel();
+			}
 		}
+		// Seconds are the stored baseline: keep them and re-derive the frame
+		// counts for the new video's frame rate.
+		SyncFrameCountsFromSeconds();
 	}
 	SyncRegionSpins();
 	UpdateControls();

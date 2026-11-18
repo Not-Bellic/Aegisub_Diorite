@@ -41,9 +41,11 @@ TEST(ocr_onnx, detector_keeps_components_separate_and_sorts_them) {
 	int const width = 64;
 	int const height = 48;
 	auto map = MakeMap(width, height, 0.0f);
-	// Lower box painted first so the ordering cannot come from insertion order.
-	PaintRect(map, width, 8, 30, 15, 37, 0.8f);
-	PaintRect(map, width, 40, 5, 50, 14, 0.8f);
+	// The lower-right box is painted first so the ordering cannot come from
+	// insertion order. Boxes sort top-to-bottom first, so the upper box is also
+	// the left one: that keeps both ordering checks meaningful.
+	PaintRect(map, width, 40, 30, 50, 37, 0.8f);
+	PaintRect(map, width, 8, 5, 15, 14, 0.8f);
 
 	auto boxes = ocr::onnx::GroupDetectorOutput(map.data(), width, height, ocr::onnx::DetPostprocessOptions());
 	ASSERT_EQ(boxes.size(), 2u);

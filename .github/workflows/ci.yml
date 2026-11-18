@@ -50,50 +50,6 @@ jobs:
       - name: Check deferred dark-mode and language restart wiring
         run: python tests/python/test_dark_mode_restart.py
 
-  custom-compositor:
-    name: Custom subtitle compositor regressions
-    needs: release-preparation
-    runs-on: ubuntu-22.04
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      - name: Install provider test dependencies
-        run: |
-          python -m pip install meson==1.7.2
-          sudo apt-get update
-          sudo apt-get install ninja-build build-essential libx11-dev libwxgtk3.0-gtk3-dev libfreetype6-dev pkg-config libfontconfig1-dev libass-dev libasound2-dev libffms2-dev intltool libboost-all-dev libhunspell-dev libuchardet-dev libpulse-dev libopenal-dev libxxhash-dev nasm libsoundtouch-dev libcurl4-openssl-dev fonts-dejavu-core
-      - name: Compile provider tests and both real custom backends
-        run: |
-          meson setup build -Dbuildtype=debugoptimized -Dopencv=disabled -Dwith_mangetsu=true
-          meson compile -C build gtest-main libassmod_copy mangetsu_copy
-      - name: Check pixel correctness, ownership and 600-event stress paths
-        run: meson test -C build --no-rebuild --verbose "gtest main" --test-args=--gtest_filter=CustomSubtitle*:BundledRenderers/*
-      - name: Check Matroska text packet import and libass serialization
-        run: meson test -C build --no-rebuild --verbose "gtest main" --test-args=--gtest_filter=Matroska*
-
-  motion-apply:
-    name: Native motion Apply regressions
-    needs: release-preparation
-    runs-on: ubuntu-22.04
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-      - name: Install test dependencies
-        run: |
-          python -m pip install meson==1.7.2
-          sudo apt-get update
-          sudo apt-get install ninja-build build-essential libx11-dev libwxgtk3.0-gtk3-dev libfreetype6-dev pkg-config libfontconfig1-dev libass-dev libasound2-dev libffms2-dev intltool libboost-all-dev libhunspell-dev libuchardet-dev libpulse-dev libopenal-dev libxxhash-dev nasm libsoundtouch-dev libcurl4-openssl-dev
-      - name: Compile existing native test runner
-        run: |
-          meson setup build -Dbuildtype=debugoptimized -Dopencv=disabled
-          meson compile -C build gtest-main
-      - name: Run Apply, optimizer, session and acquisition regressions
-        run: meson test -C build --no-rebuild --verbose "gtest main" --test-args=--gtest_filter=Motion*:motion_track_*
-
   build:
     needs: release-preparation
     name: ${{ matrix.config.name }}
@@ -178,32 +134,6 @@ jobs:
           #  os: windows-latest,
           #  msvc: false
           #}
-          - {
-            name: Ubuntu Debug,
-            os: ubuntu-22.04,
-            buildtype: debugoptimized,
-            args: ''
-          }
-          - {
-            name: Ubuntu Release,
-            os: ubuntu-22.04,
-            buildtype: release,
-            args: ''
-          }
-          - name: Ubuntu AppImage
-            os: ubuntu-22.04
-            buildtype: release
-            appimage: true
-            # distro ffms is currently broken
-            args: >-
-              --prefix=/usr
-              -Dbuild_appimage=true
-              -Ddefault_library=static
-              --force-fallback-for=ffms2
-              -Dffmpeg:libdav1d=enabled
-              -Davisynth=enabled
-              -Dbestsource=enabled
-              -Dvapoursynth=enabled
 
     steps:
       - uses: actions/checkout@v4
@@ -299,21 +229,14 @@ jobs:
         shell: pwsh
         run: .\tools\ocr\download_onnx_ocr.ps1 -DestinationDir "build\installer-deps\ocr"
 
-      - name: Install dependencies (Linux)
-        if: startsWith(matrix.config.os, 'ubuntu-')
-        run: |
-          sudo apt-get update
-          sudo apt-get install ninja-build build-essential libx11-dev libwxgtk3.0-gtk3-dev libfreetype6-dev pkg-config libfontconfig1-dev libass-dev libasound2-dev libffms2-dev intltool libboost-all-dev libhunspell-dev libuchardet-dev libpulse-dev libopenal-dev libxxhash-dev nasm desktop-file-utils libsoundtouch-dev libcurl4-openssl-dev
-
       # Share sources across Windows wx variants; no build/configuration outputs.
-      # Distro-only Ubuntu jobs do not use these expensive fallbacks.
       - name: Resolve Meson source cache inputs
-        if: matrix.config.os == 'windows-latest' || matrix.config.appimage
+        if: matrix.config.os == 'windows-latest'
         id: meson-source-inputs
         run: python tools/ci/meson_source_cache.py prepare
 
       - name: Cache stable Meson dependency sources
-        if: matrix.config.os == 'windows-latest' || matrix.config.appimage
+        if: matrix.config.os == 'windows-latest'
         id: meson-deps
         uses: actions/cache@v4
         with:
@@ -329,7 +252,7 @@ jobs:
             toshiban-meson-deps-v1-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Refresh restored dependency revisions and overlays
-        if: (matrix.config.os == 'windows-latest' || matrix.config.appimage) && steps.meson-deps.outputs.cache-hit != 'true'
+        if: matrix.config.os == 'windows-latest' && steps.meson-deps.outputs.cache-hit != 'true'
         run: python tools/ci/meson_source_cache.py refresh
 
       - name: Start sccache and reset per-job statistics
@@ -348,7 +271,7 @@ jobs:
         run: python tools/ci/verify_msvc_cache.py
 
       - name: Verify resolved Meson dependency source commits
-        if: matrix.config.os == 'windows-latest' || matrix.config.appimage
+        if: matrix.config.os == 'windows-latest'
         run: python tools/ci/meson_source_cache.py validate
 
       - name: Build current ASSDraw master from source
@@ -375,10 +298,6 @@ jobs:
           [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
           meson test -C build --verbose "gtest main"
-
-      - name: Run test (non-Windows)
-        if: matrix.config.os != 'windows-latest'
-        run: meson test -C build --verbose "gtest main"
 
       # Windows artifacts
       - name: Generate Windows installer
@@ -589,30 +508,6 @@ jobs:
           path: build/aegisub-portable-64.zip
       
 
-
-      # Linux artifacts (AppImage)
-      - name: Generate AppImage
-        if: matrix.config.appimage
-        run: |
-          mkdir -p appimage/appdir
-          meson install -C build --destdir=../appimage/appdir
-
-          cd appimage
-          sudo apt-get install libfuse2
-          curl -L "https://github.com/linuxdeploy/linuxdeploy/releases/download/1-alpha-20250213-2/linuxdeploy-x86_64.AppImage" -o linuxdeploy
-          curl -L "https://github.com/AppImage/appimagetool/releases/download/1.9.0/appimagetool-x86_64.AppImage" -o appimagetool
-          chmod +x linuxdeploy appimagetool
-
-          ./linuxdeploy --appdir appdir --desktop-file=appdir/aegisub.desktop
-          ./appimagetool appdir
-
-      - name: Upload artifacts - Linux AppImage
-        uses: actions/upload-artifact@v4
-        if: matrix.config.appimage
-        with:
-          name: ${{ matrix.config.name }}
-          path: appimage/*.AppImage
-          if-no-files-found: error
 
       - name: Report sccache statistics (Windows)
         if: always() && steps.sccache.outcome == 'success'

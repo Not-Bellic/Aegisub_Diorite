@@ -1,6 +1,10 @@
 [wrap-git]
 url = https://github.com/FFMS/ffms2.git
-revision = head
+# Pinned to the revision the packagefiles/ffms2 overlay was written against.
+# Upstream has since removed SmartAVPacket and the FFMS_Track frame lookups the
+# overlay still uses, so tracking head produced a source tree that mixed two
+# revisions and failed to compile.
+revision = 25cef14386fcaaa58ee547065deee8f6e82c56a2
 patch_directory = ffms2
 
 [provide]

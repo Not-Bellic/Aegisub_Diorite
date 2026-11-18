@@ -39,6 +39,7 @@
 #include <libaegisub/fs.h>
 #include <libaegisub/exception.h>
 #include <libaegisub/make_unique.h>
+#include <libaegisub/path.h>
 #include <libaegisub/signal.h>
 
 #include <algorithm>

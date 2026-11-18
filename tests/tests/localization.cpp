@@ -476,19 +476,19 @@ TEST(lagi_localization, LoadPlainTextList) {
 
 TEST(lagi_localization, LoadDetectsLanguage) {
 	auto zh = LoadContent("{\"k\":\"你好世界\"}", "zh.json", "json");
-	ASSERT_TRUE(zh.ok);
+	ASSERT_TRUE(zh.ok) << zh.error;
 	EXPECT_EQ(zh.language, "中文");
 
 	auto en = LoadContent("{\"k\":\"Hello world\"}", "en.json", "json");
-	ASSERT_TRUE(en.ok);
+	ASSERT_TRUE(en.ok) << en.error;
 	EXPECT_EQ(en.language, "English");
 
 	auto ja = LoadContent("{\"k\":\"こんにちは世界\"}", "ja.json", "json");
-	ASSERT_TRUE(ja.ok);
+	ASSERT_TRUE(ja.ok) << ja.error;
 	EXPECT_EQ(ja.language, "日本語");
 
 	auto ko = LoadContent("{\"k\":\"안녕하세요\"}", "ko.json", "json");
-	ASSERT_TRUE(ko.ok);
+	ASSERT_TRUE(ko.ok) << ko.error;
 	EXPECT_EQ(ko.language, "한국어");
 
 	// Bilingual records are classified by their translation side, so a long
@@ -497,7 +497,7 @@ TEST(lagi_localization, LoadDetectsLanguage) {
 		"{\"k\":{\"source\":\"This is a fairly long English sentence that would "
 		"dominate a naive character count\",\"translation\":\"这是一条中文译文\"}}",
 		"pairs.json", "json");
-	ASSERT_TRUE(bilingual.ok);
+	ASSERT_TRUE(bilingual.ok) << bilingual.error;
 	EXPECT_EQ(bilingual.language, "中文");
 }
 

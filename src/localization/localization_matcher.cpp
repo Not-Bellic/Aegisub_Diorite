@@ -243,6 +243,10 @@ uint32_t ToLower(uint32_t cp) {
 	if (cp >= 'A' && cp <= 'Z') return cp + 32;
 	if (cp >= 0xC0 && cp <= 0xD6) return cp + 32;
 	if (cp >= 0xD8 && cp <= 0xDE) return cp + 32;
+	// U+0130 (İ) is the one Latin Extended-A capital whose lowercase is "i"
+	// rather than the next code point, which is dotless ı. Handle it before
+	// the range rule so the parity shortcut cannot turn it into ı.
+	if (cp == 0x130) return 'i';
 	if (cp >= 0x100 && cp <= 0x137 && (cp & 1) == 0) return cp + 1;
 	if (cp >= 0x139 && cp <= 0x148 && (cp & 1) == 1) return cp + 1;
 	if (cp >= 0x14A && cp <= 0x177 && (cp & 1) == 0) return cp + 1;

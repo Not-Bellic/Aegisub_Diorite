@@ -70,6 +70,7 @@
 #include <libaegisub/exception.h>
 #include <libaegisub/fs.h>
 #include <libaegisub/make_unique.h>
+#include <libaegisub/path.h>
 #include <libaegisub/util.h>
 
 #include <algorithm>
@@ -98,6 +99,24 @@
 #include <wx/intl.h>
 #include <wx/textentry.h>
 #include <wx/utils.h>
+
+/// Extract localization keys from a line's Actor, Effect, Style and text
+/// fields using a regular expression. Empty regex returns no keys.
+std::vector<std::string> GetLocalizationLineKeys(AssDialogue const* line,
+	std::string const& regex) {
+	std::vector<std::string> keys;
+	if (!line || regex.empty()) return keys;
+
+	auto add = [&](std::string const& field) {
+		for (auto& key : localization::ExtractKeys(field, regex))
+			keys.push_back(std::move(key));
+	};
+	add(line->Actor.get());
+	add(line->Effect.get());
+	add(line->Style.get());
+	add(line->Text.get());
+	return keys;
+}
 
 namespace {
 
@@ -144,22 +163,6 @@ std::string AssEscapeNewlines(std::string s) {
 
 localization::MatchOptions GetLocalizationOptions() {
 	return localization::ReadMatchOptions();
-}
-
-std::vector<std::string> GetLocalizationLineKeys(AssDialogue const* line,
-	std::string const& regex) {
-	std::vector<std::string> keys;
-	if (!line || regex.empty()) return keys;
-
-	auto add = [&](std::string const& field) {
-		for (auto& key : localization::ExtractKeys(field, regex))
-			keys.push_back(std::move(key));
-	};
-	add(line->Actor.get());
-	add(line->Effect.get());
-	add(line->Style.get());
-	add(line->Text.get());
-	return keys;
 }
 
 std::vector<localization::LocalizationFile> LoadLocalizationFiles(

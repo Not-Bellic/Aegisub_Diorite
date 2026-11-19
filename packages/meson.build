@@ -1,11 +1,22 @@
 conf_pkg = configuration_data()
 
 if host_machine.system() == 'windows'
-    installer_setup = find_program(meson.project_source_root() / 'tools/win-installer-setup.ps1')
+    # A bare .ps1 makes Meson spawn Windows PowerShell 5.1. On CI the caller's
+    # PSModulePath points at PowerShell 7's modules, so 5.1 then fails to load
+    # its own Archive module (Expand-Archive: "Cannot find an overload for
+    # ExtractToDirectory ... argument count 3") and cannot autoload Get-FileHash
+    # at all. Run the packaging scripts with pwsh explicitly; fall back to
+    # powershell only when pwsh is not installed.
+    ps = find_program('pwsh', 'powershell', required: true)
+    ps_args = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File']
+    installer_script = meson.project_source_root() / 'tools/win-installer-setup.ps1'
     run_target('win-installer',
-               command: [installer_setup, meson.project_build_root(), meson.project_source_root()])
-    portable_setup = find_program(meson.project_source_root() / 'packages/win_installer/portable/create-portable.ps1')
-    run_target('win-portable', command: [portable_setup, meson.project_build_root(), meson.project_source_root()])
+               command: [ps, ps_args, installer_script,
+                         meson.project_build_root(), meson.project_source_root()])
+    portable_script = meson.project_source_root() / 'packages/win_installer/portable/create-portable.ps1'
+    run_target('win-portable',
+               command: [ps, ps_args, portable_script,
+                         meson.project_build_root(), meson.project_source_root()])
 elif host_machine.system() == 'darwin'
     fontconfig_conf = run_command('pkg-config', '--variable=confdir', 'fontconfig').stdout().strip()
     bundle_app_sh = find_program(meson.project_source_root() / 'tools/osx-bundle.sh')

@@ -57,8 +57,13 @@ Remove-Item -LiteralPath "$PortableOutputDir\ass.dll" -Force -ErrorAction Silent
 Remove-Item -LiteralPath "$PortableOutputDir\libass.dll" -Force -ErrorAction SilentlyContinue
 Write-Output 'Copying - OpenCV runtime'
 $OpenCVRuntimeSetup = Join-Path $SourceRoot "tools\copy-opencv-runtime.ps1"
-& $OpenCVRuntimeSetup -DestinationDir $PortableOutputDir
-if(!$?) { Exit $LASTEXITCODE }
+try {
+	& $OpenCVRuntimeSetup -DestinationDir $PortableOutputDir
+	if (!$?) { throw "exit code $LASTEXITCODE" }
+}
+catch {
+	throw "Copying the OpenCV runtime into the portable staging failed: $_"
+}
 
 Write-Output 'Copying - translations'
 Copy-New-Items "$InstallerDir\share\locale\*"  "$PortableOutputDir\locale" -Recurse

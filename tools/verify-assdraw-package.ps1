@@ -162,8 +162,11 @@ finally {
 
 $Installers = @(Get-ChildItem -LiteralPath $BuildRoot -Filter 'Aegisub-*.exe' -File)
 if ($Installers.Count -ne 1) {
-    throw "Expected exactly one Aegisub installer in $BuildRoot, found $($Installers.Count)."
+    $present = @(Get-ChildItem -LiteralPath $BuildRoot -File | Sort-Object Name | ForEach-Object { "$($_.Name) ($($_.Length) bytes)" })
+    throw ("Expected exactly one Aegisub installer in $BuildRoot, found $($Installers.Count). " +
+        "Build root files: " + ($present -join ', '))
 }
+Write-Output "Installer under test: $($Installers[0].FullName)"
 $InstallSmokeRoot = Join-Path $TemporaryRoot ("aegisub-installer-smoke-" + [guid]::NewGuid().ToString('N'))
 $InstallDir = Join-Path $InstallSmokeRoot 'Aegisub Toshi-ban 日本語'
 $Uninstaller = $null

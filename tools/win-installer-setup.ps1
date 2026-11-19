@@ -229,7 +229,7 @@ if (!(Test-Path $BestSourceDll)) {
 	Invoke-WebRequestWithRetry -Uri $BestSourceUrl -OutFile $BestSourceArchive
 	Assert-FileHash -Path $BestSourceArchive -ExpectedSha256 $BestSourceSha256
 	7z x $BestSourceArchive -y
-	if(!$?) { Exit $LASTEXITCODE }
+	if ($LASTEXITCODE -ne 0) { throw "Extracting $BestSourceArchive failed with exit code $LASTEXITCODE." }
 	Remove-Item $BestSourceArchive
 	if (!(Test-Path "BestSource.dll")) {
 		throw "BestSource archive $BestSourceArchive did not contain BestSource.dll."
@@ -297,20 +297,30 @@ else {
 		}
 	}
 	$OcrRuntimeSetup = Join-Path $SourceRoot "tools\ocr\download_onnx_ocr.ps1"
-	& $OcrRuntimeSetup -DestinationDir $OcrStage
-	if(!$?) { Exit $LASTEXITCODE }
+	try {
+		& $OcrRuntimeSetup -DestinationDir $OcrStage
+		if (!$?) { throw "exit code $LASTEXITCODE" }
+	}
+	catch {
+		throw "Downloading the OCR runtime and models failed: $_"
+	}
 }
 
 # localization
 Set-Location $BuildRoot
 meson compile aegisub-gmo
-if(!$?) { Exit $LASTEXITCODE }
+if ($LASTEXITCODE -ne 0) { throw "meson compile aegisub-gmo failed with exit code $LASTEXITCODE." }
 
 # OpenCV runtime DLLs for Motion Track
 $OpenCVRuntimeDir = Join-Path $BuildRoot "opencv-runtime"
 $OpenCVRuntimeSetup = Join-Path $SourceRoot "tools\copy-opencv-runtime.ps1"
-& $OpenCVRuntimeSetup -DestinationDir $OpenCVRuntimeDir
-if(!$?) { Exit $LASTEXITCODE }
+try {
+	& $OpenCVRuntimeSetup -DestinationDir $OpenCVRuntimeDir
+	if (!$?) { throw "exit code $LASTEXITCODE" }
+}
+catch {
+	throw "Copying the OpenCV runtime failed: $_"
+}
 
 # Invoke InnoSetup. Resolve ISCC explicitly: when only a shim-less installation
 # was present the bare `iscc` call raised a command-not-found error, $? turned

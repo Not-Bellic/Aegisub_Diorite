@@ -6781,9 +6781,9 @@ msgstr "形状控制点大小"
 msgid "Dark Mode"
 msgstr "深色模式"
 
-#: ../src/preferences.cpp:340
-msgid "Enable experimental dark mode (restart required)"
-msgstr "启用实验性深色模式（需重启）"
+#: ../src/preferences.cpp:349
+msgid "Enable experimental dark mode"
+msgstr "启用实验性深色模式"
 
 #: ../src/preferences.cpp:392
 msgid "Theme"

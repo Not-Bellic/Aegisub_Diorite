@@ -53,7 +53,7 @@ jobs:
   custom-compositor:
     name: Custom subtitle compositor regressions
     needs: release-preparation
-    # Paused: only the Windows wx master build runs right now. Set the
+    # Paused: only the Windows MSVC Release build runs right now. Set the
     # ENABLE_LINUX_JOBS repository variable to true to bring this back.
     if: vars.ENABLE_LINUX_JOBS == 'true'
     runs-on: ubuntu-22.04
@@ -118,9 +118,9 @@ jobs:
       fail-fast: false
       matrix:
         config:
-          # Paused: only the Windows wx master build runs right now. Uncomment the
-          # entries below to bring the other configurations back.
-          # - name: Windows MSVC Release
+          # Paused: only the Windows MSVC Release build runs right now. Uncomment
+          # the entries below to bring the other configurations back.
+          # - name: Windows MSVC Release (vcpkg writer)
             # os: windows-latest
             # runner: windows-2022
             # msvc: true
@@ -149,7 +149,7 @@ jobs:
               # -Dpaddleocr=enabled
               # -Dopencv=enabled
               # -Dwith_mangetsu=true
-          - name: Windows MSVC Release (wx master)
+          - name: Windows MSVC Release
             appimage: false
             os: windows-latest
             runner: windows-2022
@@ -260,7 +260,8 @@ jobs:
         run: ./tools/ci/windows-vcpkg.ps1 -Mode install -Access ${{ matrix.config.vcpkg_mode }}
 
       # Publish early so later jobs/runs can restore even if application CI fails.
-      # wx-master remains independent and never duplicates this archive upload.
+      # The read-only Windows build remains independent and never duplicates this
+      # archive upload.
       - name: Save OpenCV vcpkg binary archives
         if: matrix.config.vcpkg_mode == 'readwrite' && steps.vcpkg-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
@@ -645,3 +646,100 @@ jobs:
       - name: Report sccache statistics (Windows)
         if: always() && steps.sccache.outcome == 'success'
         run: python tools/ci/sccache_stats.py
+
+  publish-release:
+    name: Publish draft release
+    needs: build
+    # Only the canonical master build publishes; pull requests from forks get a
+    # read-only token and must never create releases.
+    if: >-
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+      && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      # Creating releases needs a writable token: Settings > Actions > General >
+      # Workflow permissions must allow "Read and write permissions".
+      contents: write
+      actions: read
+    concurrency:
+      # Serialize publishes so two pushes to master cannot race on the same
+      # draft release.
+      group: draft-release-${{ github.ref }}
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: v0.1.0-beta
+      RELEASE_TITLE: Aegisub Diorite v0.1.0 Beta
+      RELEASE_NOTES: Beta版本，可能会遇到各种问题
+    steps:
+      # gh resolves the release repository from the checkout's origin remote.
+      - name: Check out the repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      # download-artifact unpacks the artifact archives, so the release receives
+      # the installer .exe and the portable .zip themselves, not zips of zips.
+      - name: Download and extract the installer artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: Windows MSVC Release - installer
+          path: release-assets
+
+      - name: Download and extract the portable artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: Windows MSVC Release - portable
+          path: release-assets
+
+      - name: Verify the extracted release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          installers=(release-assets/Aegisub-*.exe)
+          portables=(release-assets/aegisub-portable-64.zip)
+          if [ "${#installers[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly one Aegisub installer, found ${#installers[@]}."
+            ls -lR release-assets
+            exit 1
+          fi
+          if [ "${#portables[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly one portable archive, found ${#portables[@]}."
+            ls -lR release-assets
+            exit 1
+          fi
+          ls -l "${installers[0]}" "${portables[0]}"
+
+      - name: Create or update the draft release
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          assets=(release-assets/Aegisub-*.exe release-assets/aegisub-portable-64.zip)
+
+          # Draft releases do not create the git tag; GitHub creates it when the
+          # release is published manually.
+          existing="$(gh release view "$RELEASE_TAG" --json isDraft --jq '.isDraft' 2>/dev/null || true)"
+          if [ -z "$existing" ]; then
+            gh release create "$RELEASE_TAG" "${assets[@]}" \
+              --draft \
+              --target "$GITHUB_SHA" \
+              --title "$RELEASE_TITLE" \
+              --notes "$RELEASE_NOTES"
+            echo "::notice::Created draft release $RELEASE_TAG. Review it, then publish it manually."
+          elif [ "$existing" = "true" ]; then
+            gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber
+            gh release edit "$RELEASE_TAG" \
+              --draft \
+              --target "$GITHUB_SHA" \
+              --title "$RELEASE_TITLE" \
+              --notes "$RELEASE_NOTES"
+            echo "::notice::Updated draft release $RELEASE_TAG. Review it, then publish it manually."
+          else
+            echo "::notice::Release $RELEASE_TAG is already published; leaving it untouched."
+          fi
+
+          gh release view "$RELEASE_TAG" --json tagName,name,isDraft,url

@@ -2,7 +2,7 @@ project('Aegisub', ['c', 'cpp'],
         license: 'BSD-3-Clause',
         meson_version: '>=1.0.0',
         default_options: ['cpp_std=c++17', 'buildtype=debugoptimized'],
-        version: '3.2.2')
+        version: '0.1.0')
 
 cmake = import('cmake')
 py = import('python').find_installation()
